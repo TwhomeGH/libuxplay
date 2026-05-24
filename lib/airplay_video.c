@@ -384,7 +384,13 @@ language_t* master_playlist_process_language(const char * data, int *slices, int
     assert (count1 == count);
     
     languages[count + 1].start = ++ptr;
-    languages[count + 1].len = strlen(ptr);
+
+	if (ptr != NULL && *ptr != '\0') {
+    	languages[count + 1].len = strlen(ptr);
+	} else {
+	    languages[count + 1].len = 0;
+	}
+	
     *languages[count + 1].code = '\0';
     languages[count + 1].name = NULL;
 
