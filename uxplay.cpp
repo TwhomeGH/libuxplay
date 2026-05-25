@@ -159,6 +159,7 @@ static bool nofreeze = false;
 static unsigned short raop_port;
 static unsigned short airplay_port;
 static uint64_t remote_clock_offset = 0;
+static uxplay_media_info_callback_t media_info_callback = NULL;
 static std::vector<std::string> allowed_clients;
 static std::vector<std::string> blocked_clients;
 static bool restrict_clients;
@@ -2116,6 +2117,16 @@ static bool check_blocked_client(char *deviceid) {
     return ret;
 }
 
+extern "C" void set_uxplay_media_info_callback(uxplay_media_info_callback_t callback) {
+    media_info_callback = callback;
+}
+
+static void report_media_info(const char *key, const char *value) {
+    if (media_info_callback) {
+        media_info_callback(key, value);
+    }
+}
+
 // Server callbacks
 
 
@@ -2183,6 +2194,7 @@ extern "C" void video_reset(void *cls, reset_type_t type) {
 
 extern "C" int video_set_codec(void *cls, video_codec_t codec) {
     bool video_is_h265 = (codec == VIDEO_CODEC_H265);
+    report_media_info("Video Codec", video_is_h265 ? "H.265 / HEVC" : "H.264 / AVC");
     if (mux_to_file) {
         mux_renderer_choose_video_codec(video_is_h265);
     }
@@ -2444,18 +2456,27 @@ extern "C" void audio_set_volume (void *cls, float volume) {
 
 extern "C" void audio_get_format (void *cls, unsigned char *ct, unsigned short *spf, bool *usingScreen, bool *isMedia, uint64_t *audioFormat) {
     unsigned char type;
+    char value[128];
     LOGI("ct=%d spf=%d usingScreen=%d isMedia=%d  audioFormat=0x%lx",*ct, *spf, *usingScreen, *isMedia, (unsigned long) *audioFormat);
     switch (*ct) {
     case 2:
         type = 0x20;
+        report_media_info("Audio Codec", "AAC");
         break;
     case 8:
         type = 0x80;
+        report_media_info("Audio Codec", "ALAC");
         break;
     default:
         type = 0x10;
+        report_media_info("Audio Codec", "Unknown");
         break;
     }
+    snprintf(value, sizeof(value), "ct=%u spf=%u screen=%s media=%s format=0x%llx",
+             (unsigned int) *ct, (unsigned int) *spf,
+             *usingScreen ? "yes" : "no", *isMedia ? "yes" : "no",
+             (unsigned long long) *audioFormat);
+    report_media_info("Audio Format", value);
     if (audio_dumpfile && type != audio_type) {
         fclose(audio_dumpfile);
         audio_dumpfile = NULL;
@@ -2479,6 +2500,10 @@ extern "C" void audio_get_format (void *cls, unsigned char *ct, unsigned short *
 }
 
 extern "C" void video_report_size(void *cls, float *width_source, float *height_source, float *width, float *height) {
+    char value[64];
+    snprintf(value, sizeof(value), "%dx%d (source %dx%d)",
+             (int) *width, (int) *height, (int) *width_source, (int) *height_source);
+    report_media_info("Stream Size", value);
     if (use_video) {
         video_renderer_size(width_source, height_source, width, height);
     }
@@ -3068,6 +3093,9 @@ int start_uxplay (int argc, char *argv[]) {
             LOGI("Use Alt-Enter key combination to toggle into/out of full-screen mode");
         }
     } 
+
+    report_media_info("Video Decoder", video_decoder.c_str());
+    report_media_info("Video Renderer", videosink.c_str());
 
     if (bt709_fix && use_video) {
         video_parser.append(" ! ");
