@@ -160,6 +160,11 @@ static unsigned short raop_port;
 static unsigned short airplay_port;
 static uint64_t remote_clock_offset = 0;
 static uxplay_media_info_callback_t media_info_callback = NULL;
+static uxplay_log_callback_t api_log_callback = NULL;
+static uxplay_client_callback_t client_callback = NULL;
+static std::string active_client_name;
+static std::string active_client_model;
+static std::string active_client_deviceid;
 static std::vector<std::string> allowed_clients;
 static std::vector<std::string> blocked_clients;
 static bool restrict_clients;
@@ -232,25 +237,35 @@ static float previous_hls_position = 0.0f;
 /* logging */
 
 static void log(int level, const char* format, ...) {
-    va_list vargs;
     if (level > log_level) return;
+
+    char message[2048];
+    va_list vargs;
+    va_start(vargs, format);
+    vsnprintf(message, sizeof(message), format, vargs);
+    va_end(vargs);
+
+    const char *prefix = "";
     switch (level) {
-    case 0:
-    case 1:
-    case 2:
-    case 3:
-        printf("*** ERROR: ");
+    case LOGGER_EMERG:
+    case LOGGER_ALERT:
+    case LOGGER_CRIT:
+    case LOGGER_ERR:
+        prefix = "*** ERROR: ";
         break;
-    case 4:
-        printf("*** WARNING: ");
+    case LOGGER_WARNING:
+        prefix = "*** WARNING: ";
         break;
     default:
         break;
     }
-    va_start(vargs, format);
-    vprintf(format, vargs);
-    printf("\n");
-    va_end(vargs);
+
+    printf("%s%s\n", prefix, message);
+    fflush(stdout);
+
+    if (api_log_callback) {
+        api_log_callback(level, message);
+    }
 }
 
 #define LOGD(...) log(LOGGER_DEBUG, __VA_ARGS__)
@@ -2121,6 +2136,24 @@ extern "C" void set_uxplay_media_info_callback(uxplay_media_info_callback_t call
     media_info_callback = callback;
 }
 
+extern "C" void set_uxplay_log_callback(uxplay_log_callback_t callback) {
+    api_log_callback = callback;
+}
+
+extern "C" void set_uxplay_client_callback(uxplay_client_callback_t callback) {
+    client_callback = callback;
+}
+
+static void report_client_event(const char *event, const char *name, const char *model, const char *deviceid, int connections) {
+    if (client_callback) {
+        client_callback(event,
+                        name ? name : "",
+                        model ? model : "",
+                        deviceid ? deviceid : "",
+                        connections);
+    }
+}
+
 static void report_media_info(const char *key, const char *value) {
     if (media_info_callback) {
         media_info_callback(key, value);
@@ -2243,12 +2276,19 @@ extern "C" void export_dacp(void *cls, const char *active_remote, const char *da
 extern "C" void conn_init (void *cls) {
     open_connections++;
     LOGD("Open connections: %i", open_connections);
+    report_client_event("connections",
+                        active_client_name.c_str(),
+                        active_client_model.c_str(),
+                        active_client_deviceid.c_str(),
+                        (int) open_connections);
     //video_renderer_update_background(1);
 }
 
 extern "C" void conn_destroy (void *cls) {
     //video_renderer_update_background(-1);
-    open_connections--;
+    if (open_connections > 0) {
+        open_connections--;
+    }
     LOGD("Open connections: %i", open_connections);
     if (open_connections == 0) {
         remote_clock_offset = 0;
@@ -2261,6 +2301,16 @@ extern "C" void conn_destroy (void *cls) {
         if (mux_to_file) {
             mux_renderer_stop();
         }
+        active_client_name.clear();
+        active_client_model.clear();
+        active_client_deviceid.clear();
+        report_client_event("disconnected", "", "", "", 0);
+    } else {
+        report_client_event("connections",
+                            active_client_name.c_str(),
+                            active_client_model.c_str(),
+                            active_client_deviceid.c_str(),
+                            (int) open_connections);
     }
 }
 
@@ -2303,6 +2353,22 @@ extern "C" void report_client_request(void *cls, char *deviceid, char * model, c
     if (check_blocked_client(deviceid)) {
         *admit = false;
         LOGI("*** attempt to connect by blocked client (clientID %s): DENIED\n", deviceid);
+    }
+    if (*admit) {
+        std::string id = deviceid ? deviceid : "";
+        bool is_new = (active_client_deviceid != id) || active_client_name.empty();
+        active_client_name = name ? name : "";
+        active_client_model = model ? model : "";
+        active_client_deviceid = id;
+        if (is_new) {
+            report_client_event("connected",
+                                active_client_name.c_str(),
+                                active_client_model.c_str(),
+                                active_client_deviceid.c_str(),
+                                (int) open_connections);
+        }
+    } else {
+        report_client_event("rejected", name, model, deviceid, (int) open_connections);
     }
     // Pass device model to renderer for device frame display
     if (*admit && use_video) {
@@ -2909,6 +2975,10 @@ int start_uxplay (int argc, char *argv[]) {
     std::vector<char> server_hw_addr;
     std::string config_file = "";
 
+    active_client_name.clear();
+    active_client_model.clear();
+    active_client_deviceid.clear();
+
 #ifdef _WIN32
     if (!SetConsoleCtrlHandler(CtrlHandler, TRUE)) {
         LOGE("Could not set control handler");
@@ -3308,6 +3378,7 @@ int start_uxplay (int argc, char *argv[]) {
         stop_dnssd();
     }
     cleanup();
+    return 0;
 }
 
 void stop_uxplay() {
