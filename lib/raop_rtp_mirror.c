@@ -97,6 +97,7 @@ struct raop_rtp_mirror_s {
     /* These variables only edited mutex locked */
     int running;
     int joined;
+    int stopping;
 
     int flush;
     thread_handle_t thread_mirror;
@@ -901,7 +902,36 @@ raop_rtp_mirror_start(raop_rtp_mirror_t *raop_rtp_mirror, unsigned short *mirror
     raop_rtp_mirror->show_client_FPS_data = show_client_FPS_data;
 
     MUTEX_LOCK(raop_rtp_mirror->run_mutex);
-    if (raop_rtp_mirror->running || !raop_rtp_mirror->joined) {
+    if (raop_rtp_mirror->running) {
+        logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
+                   "raop_rtp_mirror_start skipped: already running");
+        MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
+        return;
+    }
+    if (!raop_rtp_mirror->joined && !raop_rtp_mirror->stopping) {
+        /* The previous mirror thread exited by itself (client closed the
+         * video socket) without raop_rtp_mirror_stop() reaping it. */
+        logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
+                   "raop_rtp_mirror_start: joining previous mirror thread");
+        MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
+        THREAD_JOIN(raop_rtp_mirror->thread_mirror);
+        MUTEX_LOCK(raop_rtp_mirror->run_mutex);
+        raop_rtp_mirror->joined = 1;
+    }
+
+    /* A concurrent stop may still be joining the old thread. */
+    for (int i = 0; i < 100
+         && (raop_rtp_mirror->stopping || !raop_rtp_mirror->joined); i++) {
+        MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
+        sleepms(10);
+        MUTEX_LOCK(raop_rtp_mirror->run_mutex);
+    }
+    if (raop_rtp_mirror->running || raop_rtp_mirror->stopping
+        || !raop_rtp_mirror->joined) {
+        logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
+                   "raop_rtp_mirror_start skipped: running=%d joined=%d stopping=%d",
+                   raop_rtp_mirror->running, raop_rtp_mirror->joined,
+                   raop_rtp_mirror->stopping);
         MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
         return;
     }
@@ -933,17 +963,17 @@ raop_rtp_mirror_start(raop_rtp_mirror_t *raop_rtp_mirror, unsigned short *mirror
 void raop_rtp_mirror_stop(raop_rtp_mirror_t *raop_rtp_mirror) {
     assert(raop_rtp_mirror);
 
-    /* Check that we are running and thread is not
-     * joined (should never be while still running) */
     MUTEX_LOCK(raop_rtp_mirror->run_mutex);
-    if (!raop_rtp_mirror->running || raop_rtp_mirror->joined) {
+    if (raop_rtp_mirror->joined || raop_rtp_mirror->stopping) {
         MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
         return;
     }
     raop_rtp_mirror->running = 0;
+    raop_rtp_mirror->stopping = 1;
     MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
 
-    /* Join the thread */
+    /* Join even when the thread already exited by itself; otherwise joined
+     * stays 0 forever and the next raop_rtp_mirror_start() silently fails. */
     THREAD_JOIN(raop_rtp_mirror->thread_mirror);
 
     if (raop_rtp_mirror->mirror_data_sock != -1) {
@@ -954,6 +984,7 @@ void raop_rtp_mirror_stop(raop_rtp_mirror_t *raop_rtp_mirror) {
     /* Mark thread as joined */
     MUTEX_LOCK(raop_rtp_mirror->run_mutex);
     raop_rtp_mirror->joined = 1;
+    raop_rtp_mirror->stopping = 0;
     MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
 }
 
