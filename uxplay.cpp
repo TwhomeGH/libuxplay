@@ -3450,6 +3450,11 @@ int start_uxplay (int argc, char *argv[]) {
      * must not silently change the requested resolution. Clients that want
      * HEVC must request a height above 1080p with -s. */
     if (!display[0] && !display[1]) {
+        if (h265_support) {
+            LOGI("h265 enabled without -s: using default 1920x1080; "
+                 "the client will normally use H.264. Use -s wxh with "
+                 "h > 1080 for HEVC.");
+        }
         display[0] = 1920;
         display[1] = 1080;
     }
