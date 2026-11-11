@@ -37,6 +37,8 @@
 #include <stdarg.h>
 #include <math.h>
 #include <inttypes.h>
+#include <atomic>
+#include <mutex>
 
 #ifdef _WIN32  /*modifications for Windows compilation */
 #include <glib.h>
@@ -94,6 +96,12 @@
   #define DEFAULT_SRGB_FIX false
 #endif
 
+#ifdef GST_MACOS
+#define UXPLAY_RETURN(value) return
+#else
+#define UXPLAY_RETURN(value) return value
+#endif
+
 static std::string server_name = DEFAULT_NAME;
 static bool server_name_is_utf8 = false;
 static dnssd_t *dnssd = NULL;
@@ -104,7 +112,7 @@ static bool video_sync = true;
 static int64_t audio_delay_alac = 0;
 static int64_t audio_delay_aac = 0;
 static bool relaunch_video = false;
-static bool reset_loop = false;
+static std::atomic<bool> reset_loop{false};
 static unsigned int open_connections= 0;
 static std::string videosink = "autovideosink";
 static std::string videosink_options = "";
@@ -148,7 +156,9 @@ static bool do_append_hostname = true;
 static bool use_random_hw_addr = false;
 static unsigned short display[5] = {0}, tcp[3] = {0}, udp[3] = {0};
 static GMainLoop *g_loop = NULL;
-static bool do_shutdown = false;
+static std::mutex g_loop_mutex;
+static std::atomic<bool> do_shutdown{false};
+static std::atomic<bool> stop_requested{false};
 static bool debug_log = DEFAULT_DEBUG_LOG;
 static bool suppress_packet_debug_data = false;
 static int log_level = LOGGER_INFO;
@@ -162,6 +172,7 @@ static uint64_t remote_clock_offset = 0;
 static uxplay_media_info_callback_t media_info_callback = NULL;
 static uxplay_log_callback_t api_log_callback = NULL;
 static uxplay_client_callback_t client_callback = NULL;
+static uxplay_ready_callback_t ready_callback = NULL;
 static std::string active_client_name;
 static std::string active_client_model;
 static std::string active_client_deviceid;
@@ -233,6 +244,118 @@ static const char *reason_always = "mirroring client: inhibit always";
 static const char *reason_active = "actively receiving video";
 static float previous_hls_position = 0.0f;
 #endif
+
+/* Reset option state so a new start_uxplay() in the same process does not
+ * inherit values from the previous engine run. Call before parse_arguments(). */
+static void reset_engine_options() {
+    server_name = DEFAULT_NAME;
+    server_name_is_utf8 = false;
+    audio_sync = false;
+    video_sync = true;
+    audio_delay_alac = 0;
+    audio_delay_aac = 0;
+    relaunch_video = false;
+    videosink = "autovideosink";
+    videosink_options = "";
+    videoflip[0] = NONE;
+    videoflip[1] = NONE;
+    use_video = true;
+    compression_type = 0;
+    audiosink = "autoaudiosink";
+    audiodelay = -1;
+    use_audio = true;
+#if __APPLE__
+    new_window_closing_behavior = false;
+#else
+    new_window_closing_behavior = true;
+#endif
+    close_window = new_window_closing_behavior;
+    full_video_reset = true;
+    video_parser = "h264parse";
+    video_decoder = "decodebin";
+    video_converter = "videoconvert";
+    show_client_FPS_data = false;
+    video_dumpfile_name = "videodump";
+    video_dump_limit = 0;
+    video_dumpfile_count = 0;
+    video_dump_count = 0;
+    dump_video = false;
+    audio_dumpfile_name = "audiodump";
+    audio_dump_limit = 0;
+    audio_dumpfile_count = 0;
+    audio_dump_count = 0;
+    dump_audio = false;
+    audio_type = 0x00;
+    previous_audio_type = 0x00;
+    fullscreen = false;
+    render_coverart = false;
+    coverart_filename.clear();
+    metadata_filename.clear();
+    do_append_hostname = true;
+    use_random_hw_addr = false;
+    memset(display, 0, sizeof(display));
+    memset(tcp, 0, sizeof(tcp));
+    memset(udp, 0, sizeof(udp));
+    debug_log = DEFAULT_DEBUG_LOG;
+    suppress_packet_debug_data = false;
+    log_level = LOGGER_INFO;
+    bt709_fix = false;
+    srgb_fix = DEFAULT_SRGB_FIX;
+    nohold = 0;
+    nofreeze = false;
+    restrict_clients = false;
+    setup_legacy_pairing = false;
+    pin_pw = 0;
+    password.clear();
+    pin = 0;
+    min_password_length = MIN_PASSWORD_LENGTH;
+    keyfile.clear();
+    mac_address.clear();
+    dacpfile.clear();
+    registration_list = false;
+    pairing_register.clear();
+    registered_keys.clear();
+    allowed_clients.clear();
+    blocked_clients.clear();
+    db_low = -30.0;
+    db_high = 0.0;
+    taper_volume = false;
+    initial_volume = 0.0;
+    h265_support = false;
+    hls_support = false;
+    lang.clear();
+    url.clear();
+    gst_x11_window_id = 0;
+    video_eos_watch_id = 0;
+    progress_id = 0;
+    gst_hls_position_id = 0;
+    preserve_connections = false;
+    missed_feedback_limit = MISSED_FEEDBACK_LIMIT;
+    missed_feedback = 0;
+    playbin_version = DEFAULT_PLAYBIN_VERSION;
+    reset_httpd = false;
+    monitor_progress = false;
+    rtptime = 0;
+    rtptime_prev = 0;
+    rtptime_start = 0;
+    rtptime_end = 0;
+    rtptime_coverart_expired = 0;
+    artist.clear();
+    track_title.clear();
+    track_album.clear();
+    coverart_artist.clear();
+    ble_filename.clear();
+    rtp_pipeline.clear();
+    audio_rtp_pipeline.clear();
+    mux_to_file = false;
+    mux_filename = "recording";
+    scrsv = 0;
+    n_video_renderers = 0;
+    n_audio_renderers = 0;
+    active_client_name.clear();
+    active_client_model.clear();
+    active_client_deviceid.clear();
+}
 
 /* logging */
 
@@ -576,7 +699,7 @@ static gboolean feedback_callback(gpointer loop) {
 }
 
 static gboolean reset_callback(gpointer loop) {
-    if (reset_loop) {
+    if (do_shutdown.load() || reset_loop.load()) {
         g_main_loop_quit((GMainLoop *) loop);
     }
     return TRUE;
@@ -689,9 +812,11 @@ static gboolean video_eos_watch_callback (gpointer loop) {
 static void main_loop()  {
     guint gst_video_bus_watch_id[MAX_VIDEO_RENDERERS] = { 0 };
     guint gst_audio_bus_watch_id[MAX_AUDIO_RENDERERS] = { 0 };
-    //GMainLoop *loop = g_main_loop_new(NULL,FALSE);
-    g_loop = g_main_loop_new(NULL, FALSE);
-    GMainLoop *loop = g_loop;
+    GMainLoop *loop = g_main_loop_new(NULL, FALSE);
+    {
+        std::lock_guard<std::mutex> lock(g_loop_mutex);
+        g_loop = loop;
+    }
     relaunch_video = false;
     monitor_progress = false;
     reset_loop = false;
@@ -751,7 +876,9 @@ static void main_loop()  {
     guint sigint_watch_id = g_unix_signal_add(SIGINT, (GSourceFunc) sigint_callback, (gpointer) loop);
     guint sighup_watch_id = g_unix_signal_add(SIGHUP, (GSourceFunc) sigint_callback, (gpointer) loop);
 #endif
-    g_main_loop_run(loop);
+    if (!do_shutdown.load()) {
+        g_main_loop_run(loop);
+    }
 
 #ifdef _WIN32
     gmainloop = NULL;
@@ -775,6 +902,10 @@ static void main_loop()  {
     if (progress_id > 0) g_source_remove(progress_id);
     if (video_eos_watch_id > 0) g_source_remove(video_eos_watch_id);
     if (feedback_watch_id > 0) g_source_remove(feedback_watch_id);
+    {
+        std::lock_guard<std::mutex> lock(g_loop_mutex);
+        g_loop = NULL;
+    }
     g_main_loop_unref(loop);
 }    
 
@@ -2144,6 +2275,10 @@ extern "C" void set_uxplay_client_callback(uxplay_client_callback_t callback) {
     client_callback = callback;
 }
 
+extern "C" void set_uxplay_ready_callback(uxplay_ready_callback_t callback) {
+    ready_callback = callback;
+}
+
 static void report_client_event(const char *event, const char *name, const char *model, const char *deviceid, int connections) {
     if (client_callback) {
         client_callback(event,
@@ -2972,6 +3107,17 @@ static void real_main (int argc, char *argv[]) {
 #else
 int start_uxplay (int argc, char *argv[]) {
 #endif
+    if (stop_requested.exchange(false)) {
+        LOGI("Engine start cancelled by a pending stop request");
+        UXPLAY_RETURN(0);
+    }
+    reset_uxplay_state();
+    if (stop_requested.exchange(false)) {
+        LOGI("Engine start cancelled by a stop request during reset");
+        UXPLAY_RETURN(0);
+    }
+    reset_engine_options();
+
     std::vector<char> server_hw_addr;
     std::string config_file = "";
 
@@ -2982,7 +3128,7 @@ int start_uxplay (int argc, char *argv[]) {
 #ifdef _WIN32
     if (!SetConsoleCtrlHandler(CtrlHandler, TRUE)) {
         LOGE("Could not set control handler");
-        exit(1);
+        UXPLAY_RETURN(-1);
     }
 #else
     signal(SIGINT, CtrlHandler);
@@ -3018,12 +3164,12 @@ int start_uxplay (int argc, char *argv[]) {
             struct stat sb;
             if (i+1 == argc) {
                 LOGE ("option -rc requires a filename  (-rc <filename>)");
-                exit(1);
+                UXPLAY_RETURN(-1);
             }
             rcfile = argv[i+1];
             if (stat(rcfile, &sb) == -1) {
                 LOGE("startup file %s specified by option -rc was not found", rcfile);
-                exit(0);
+                UXPLAY_RETURN(-1);
             }
             break;
         }
@@ -3230,8 +3376,8 @@ int start_uxplay (int argc, char *argv[]) {
     }
 
     if (!gstreamer_init()) {
-        LOGE ("stopping");
-        exit (1);
+        LOGE ("gstreamer_init failed; engine cannot start");
+        UXPLAY_RETURN(-1);
     }
 
     render_logger = logger_init();
@@ -3301,11 +3447,15 @@ int start_uxplay (int argc, char *argv[]) {
     }
 
     if (start_dnssd(server_hw_addr, server_name)) {
-        cleanup();
-    }
-    if (start_raop_server(display, tcp, udp, debug_log)) {
         stop_dnssd();
         cleanup();
+        UXPLAY_RETURN(-2);
+    }
+    if (start_raop_server(display, tcp, udp, debug_log)) {
+        stop_raop_server();
+        stop_dnssd();
+        cleanup();
+        UXPLAY_RETURN(-3);
     }
 
     if (lang.length() > 1) {
@@ -3330,7 +3480,12 @@ int start_uxplay (int argc, char *argv[]) {
         stop_raop_server();
         stop_dnssd();
         cleanup();
+        UXPLAY_RETURN(-4);
     }
+    if (ready_callback) {
+        ready_callback();
+    }
+
     reconnect:
     compression_type = 0;
     close_window = new_window_closing_behavior;
@@ -3339,8 +3494,9 @@ int start_uxplay (int argc, char *argv[]) {
         LOGI("Stopping RAOP Server...");
         stop_raop_server();
         stop_dnssd();
+        stop_requested = false;
         cleanup();
-        return 0;
+        UXPLAY_RETURN(0);
     }
     if (relaunch_video) {
         if (reset_httpd) {
@@ -3377,18 +3533,25 @@ int start_uxplay (int argc, char *argv[]) {
         stop_raop_server();
         stop_dnssd();
     }
+    stop_requested = false;
     cleanup();
-    return 0;
+    UXPLAY_RETURN(0);
 }
 
 void stop_uxplay() {
+    stop_requested = true;
     do_shutdown = true;
     reset_loop = true;
-    stop_raop_server();
-    stop_dnssd();
+    std::lock_guard<std::mutex> lock(g_loop_mutex);
     if (g_loop && g_main_loop_is_running(g_loop)) {
         g_main_loop_quit(g_loop);
     }
+}
+
+extern "C" void reset_uxplay_state() {
+    do_shutdown = false;
+    reset_loop = false;
+    open_connections = 0;
 }
 
 static void cleanup() {
@@ -3398,14 +3561,18 @@ static void cleanup() {
     if (use_video)  {
         video_renderer_destroy();
     }
-    logger_destroy(render_logger);
-    render_logger = NULL;
-    if(audio_dumpfile) {
+    if (render_logger) {
+        logger_destroy(render_logger);
+        render_logger = NULL;
+    }
+    if (audio_dumpfile) {
         fclose(audio_dumpfile);
+        audio_dumpfile = NULL;
     }
     if (video_dumpfile) {
         fwrite(mark, 1, sizeof(mark), video_dumpfile);
         fclose(video_dumpfile);
+        video_dumpfile = NULL;
     }
     if (coverart_filename.length()) {
         remove (coverart_filename.c_str());
@@ -3429,5 +3596,4 @@ static void cleanup() {
         dbus_connection_unref(dbus_connection);
     }
 #endif
-    exit(0);
 }
