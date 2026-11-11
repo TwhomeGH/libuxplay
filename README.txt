@@ -1148,9 +1148,9 @@ used in each pipeline. A wired Client-Server ethernet connection is
 preferred over Wifi for 4K video, and might be required by the client.
 Only recent Apple devices (M1/M2 Macs or iPads, and some iPhones) can
 send h265 video if a resolution "-s wxh" with h \> 1080 is requested.
-The "-h265" option changes the default resolution ("-s" option) from
-1920x1080 to 3840x2160, and leaves default maximum framerate ("-fps"
-option) at 30fps.
+The "-h265" option only advertises HEVC capability; it does not change
+the default resolution. The default is 1920x1080; request 4K (or any
+height above 1080) explicitly with "-s" when HEVC is wanted.
 
 **-mp4 \[fn\]** Record mirror-mode and audio-mode audio/video to a mp4
 file, while watching/listening. File name is fn.n.(format).mp4, (default
@@ -1282,8 +1282,7 @@ the "untapered" volume if it is louder.)
 \[0:1\], with 0.0 = mute, 1.0 = full volume (*v* is a decimal number).
 
 **-s wxh** e.g. -s 1920x1080 (= "1080p"), the default width and height
-resolutions in pixels for h264 video. (The default becomes 3840x2160 (=
-"4K") when the -h265 option is used.) This is just a request made to the
+resolutions in pixels for h264 video. This is just a request made to the
 AirPlay client, and perhaps will not be the final resolution you get. w
 and h are whole numbers with four digits or less. Note that the
 **height** pixel size is the controlling one used by the client for

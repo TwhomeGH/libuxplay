@@ -1066,6 +1066,7 @@ static void print_info (char *name) {
     printf("-n name   Specify network name of the AirPlay server (UTF-8/ascii)\n");
     printf("-nh       Do not add \"@hostname\" at the end of AirPlay server name\n");
     printf("-h265     Support h265 (4K) video (with h265 versions of h264 plugins)\n");
+    printf("          HEVC is only used when -s requests height > 1080\n");
     printf("-mp4 [fn] Record (non-HLS)audio/video to mp4 file \"fn.[n].[format].mp4\"\n");
     printf("          n=1,2,.. format = H264/5, ALAC/AAC. Default fn=\"recording\"\n");
     printf("-hls [v]  Support HTTP Live Streaming (HLS), Youtube app video only: \n");
@@ -1090,7 +1091,7 @@ static void print_info (char *name) {
     printf("-taper    Use a \"tapered\" AirPlay volume-control profile\n");
     printf("-vol <v>  Set initial audio-streaming volume: range [mute=0.0:1.0=full]\n"); 
     printf("-s wxh[@r]Request to client for video display resolution [refresh_rate]\n"); 
-    printf("          default 1920x1080[@60] (or 3840x2160[@60] with -h265 option)\n");
+    printf("          default 1920x1080[@60]; use -s for 4K/HEVC\n");
     printf("-o        Set display \"overscanned\" mode on (not usually needed)\n");
     printf("-fs       Full-screen (only with X11, Wayland, VAAPI, D3D11/12, kms)\n");
     printf("-p        Use legacy ports UDP 6000:6001:7011 TCP 7000:7001:7100\n");
@@ -3445,15 +3446,12 @@ int start_uxplay (int argc, char *argv[]) {
         write_metadata(metadata_filename.c_str(), "no data\n");
     }
 
-    /* set default resolutions for h264 or h265*/
+    /* set default resolution: -h265 only advertises HEVC capability and
+     * must not silently change the requested resolution. Clients that want
+     * HEVC must request a height above 1080p with -s. */
     if (!display[0] && !display[1]) {
-        if (h265_support) {
-            display[0] = 3840;
-            display[1] = 2160;
-        } else {
-            display[0] = 1920;
-            display[1] = 1080;
-        }	  
+        display[0] = 1920;
+        display[1] = 1080;
     }
 
     if (start_dnssd(server_hw_addr, server_name)) {
