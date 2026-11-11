@@ -2660,17 +2660,27 @@ extern "C" void audio_get_format (void *cls, unsigned char *ct, unsigned short *
     char value[128];
     LOGI("ct=%d spf=%d usingScreen=%d isMedia=%d  audioFormat=0x%lx",*ct, *spf, *usingScreen, *isMedia, (unsigned long) *audioFormat);
     switch (*ct) {
+    case 1:
+        type = 0x10;
+        report_media_info("Audio Codec", "PCM");
+        break;
     case 2:
         type = 0x20;
-        report_media_info("Audio Codec", "AAC");
+        report_media_info("Audio Codec", "ALAC");
+        break;
+    case 4:
+        type = 0x10;
+        report_media_info("Audio Codec", "AAC-LC");
         break;
     case 8:
         type = 0x80;
-        report_media_info("Audio Codec", "ALAC");
+        report_media_info("Audio Codec", "AAC-ELD");
         break;
     default:
         type = 0x10;
-        report_media_info("Audio Codec", "Unknown");
+        snprintf(value, sizeof(value), "Unknown (ct=%u)",
+                 (unsigned int) *ct);
+        report_media_info("Audio Codec", value);
         break;
     }
     snprintf(value, sizeof(value), "ct=%u spf=%u screen=%s media=%s format=0x%llx",
