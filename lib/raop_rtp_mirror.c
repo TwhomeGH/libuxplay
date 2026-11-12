@@ -205,6 +205,7 @@ raop_rtp_mirror_thread(void *arg)
     bool unsupported_codec = false;
     bool video_stream_suspended = false;
     bool first_packet = true;
+    uint64_t last_video_packet_time = raop_ntp_get_local_time();
     
     while (1) {
         fd_set rfds;
@@ -216,6 +217,22 @@ raop_rtp_mirror_thread(void *arg)
             break;
         }
         MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
+
+        /* Rebuild the mirror connection if the client is connected but
+         * stops sending video packets. Audio can keep running while the
+         * video pipeline is stuck, so this is the recovery point. */
+        if (codec != VIDEO_CODEC_UNKNOWN && !video_stream_suspended) {
+            const uint64_t now = raop_ntp_get_local_time();
+            if (now > last_video_packet_time
+                && now - last_video_packet_time > 8 * SECOND_IN_NSECS) {
+                logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
+                           "no video packets for %.1f s; rebuilding mirror connection",
+                           (double) (now - last_video_packet_time)
+                               / SECOND_IN_NSECS);
+                conn_reset = true;
+                break;
+            }
+        }
 
         /* Set timeout valu to 5ms */
         tv.tv_sec = 0;
@@ -556,6 +573,7 @@ raop_rtp_mirror_thread(void *arg)
                 }
 
                 raop_rtp_mirror->callbacks.video_process(raop_rtp_mirror->callbacks.cls, raop_rtp_mirror->ntp, &video_data);
+                last_video_packet_time = raop_ntp_get_local_time();
                 free(payload_out);
                 break;
             case 0x01:
@@ -588,6 +606,7 @@ raop_rtp_mirror_thread(void *arg)
                 } else if (video_stream_suspended && (packet[6] == 0x16 || packet[6] == 0x1e)) {
                     raop_rtp_mirror->callbacks.video_resume(raop_rtp_mirror->callbacks.cls);
                     video_stream_suspended = false;
+                    last_video_packet_time = raop_ntp_get_local_time();
                 }
 
                 assert (raop_rtp_mirror->callbacks.video_set_codec);
@@ -633,6 +652,7 @@ raop_rtp_mirror_thread(void *arg)
                     if (codec == VIDEO_CODEC_UNKNOWN) {
                         codec = VIDEO_CODEC_H265;
                         h265_video = true;
+                        last_video_packet_time = raop_ntp_get_local_time();
                         if (raop_rtp_mirror->callbacks.video_set_codec(raop_rtp_mirror->callbacks.cls, codec) < 0) {
                             logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "failed to set video codec as H265 ");
                             /* drop connection */
@@ -712,6 +732,7 @@ raop_rtp_mirror_thread(void *arg)
                     if (codec == VIDEO_CODEC_UNKNOWN) {
                         codec = VIDEO_CODEC_H264;
                         h265_video = false;
+                        last_video_packet_time = raop_ntp_get_local_time();
                         if (raop_rtp_mirror->callbacks.video_set_codec(raop_rtp_mirror->callbacks.cls, codec) < 0) {
                             logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "failed to set video codec as H264 ");
                             /* drop connection */
