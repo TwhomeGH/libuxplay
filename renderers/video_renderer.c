@@ -38,6 +38,8 @@ static GstClockTime gst_video_pipeline_base_time = GST_CLOCK_TIME_NONE;
 static gchar *hud_last_text = NULL;
 static int hud_last_right = -1;
 static int hud_last_bottom = -1;
+static int hud_last_xpad = -1;
+static int hud_last_ypad = -1;
 static volatile uint64_t presented_frame_count = 0;
 static volatile uint64_t presented_frame_last_ns = 0;
 static logger_t *logger = NULL;
@@ -484,6 +486,8 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                  hud_last_text = NULL;
                  hud_last_right = -1;
                  hud_last_bottom = -1;
+                 hud_last_xpad = -1;
+                 hud_last_ypad = -1;
              }
         }	
 #ifdef X_DISPLAY_FIX
@@ -729,23 +733,28 @@ void video_renderer_hls_ready() {
     }
 }
 
-void video_renderer_set_hud_text(const char *text, bool right, bool bottom) {
+void video_renderer_set_hud_text(const char *text, bool right, bool bottom,
+                                 int xpad, int ypad) {
     if (!text) {
         text = "";
     }
     if (hud_last_text && !strcmp(text, hud_last_text)
         && hud_last_right == (right ? 1 : 0)
-        && hud_last_bottom == (bottom ? 1 : 0)) {
+        && hud_last_bottom == (bottom ? 1 : 0)
+        && hud_last_xpad == xpad && hud_last_ypad == ypad) {
         return;
     }
     g_free(hud_last_text);
     hud_last_text = g_strdup(text);
     hud_last_right = right ? 1 : 0;
     hud_last_bottom = bottom ? 1 : 0;
+    hud_last_xpad = xpad;
+    hud_last_ypad = ypad;
     for (int i = 0; i < n_renderers; i++) {
         if (renderer_type[i] && renderer_type[i]->hud_overlay) {
             g_object_set(G_OBJECT(renderer_type[i]->hud_overlay),
                          "text", text,
+                         "xpad", xpad, "ypad", ypad,
                          NULL);
             gst_util_set_object_arg(
                 G_OBJECT(renderer_type[i]->hud_overlay),

@@ -2268,8 +2268,9 @@ extern "C" void set_uxplay_media_info_callback(uxplay_media_info_callback_t call
     media_info_callback = callback;
 }
 
-extern "C" void set_uxplay_hud_text(const char *text, int right, int bottom) {
-    video_renderer_set_hud_text(text, right != 0, bottom != 0);
+extern "C" void set_uxplay_hud_text(const char *text, int right, int bottom,
+                                     int xpad, int ypad) {
+    video_renderer_set_hud_text(text, right != 0, bottom != 0, xpad, ypad);
 }
 
 extern "C" int get_uxplay_frame_stats(uint64_t *frames, double *age_ms) {

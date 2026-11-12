@@ -55,7 +55,8 @@ void video_renderer_start ();
 void video_renderer_stop ();
 void video_renderer_set_device_model(const char *model, const char *name);
 void video_renderer_set_track_metadata(const char *title, const char *artist, const char *album);
-void video_renderer_set_hud_text(const char *text, bool right, bool bottom);
+void video_renderer_set_hud_text(const char *text, bool right, bool bottom,
+                                 int xpad, int ypad);
 void video_renderer_get_frame_stats(uint64_t *frames, double *age_ms);
 void video_renderer_pause ();
 void video_renderer_hls_ready ();
