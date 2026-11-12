@@ -38,6 +38,8 @@ static GstClockTime gst_video_pipeline_base_time = GST_CLOCK_TIME_NONE;
 static gchar *hud_last_text = NULL;
 static int hud_last_right = -1;
 static int hud_last_bottom = -1;
+static volatile uint64_t presented_frame_count = 0;
+static volatile uint64_t presented_frame_last_ns = 0;
 static logger_t *logger = NULL;
 static unsigned short width, height, width_source, height_source;  /* not currently used */
 static bool first_packet = false;
@@ -176,6 +178,30 @@ static const char jpeg_caps[]="image/jpeg";
 static const char h264_caps[]="video/x-h264,stream-format=(string)byte-stream,alignment=(string)au";
 static const char h265_caps[]="video/x-h265,stream-format=(string)byte-stream,alignment=(string)au";
 
+static GstPadProbeReturn frame_probe_cb(GstPad *pad, GstPadProbeInfo *info,
+                                        gpointer user_data) {
+    (void) pad;
+    (void) user_data;
+    if (info && (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER)) {
+        presented_frame_count++;
+        presented_frame_last_ns =
+            (uint64_t) g_get_monotonic_time() * 1000ULL;
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+void video_renderer_get_frame_stats(uint64_t *frames, double *age_ms) {
+    if (frames) {
+        *frames = presented_frame_count;
+    }
+    if (age_ms) {
+        const uint64_t now = (uint64_t) g_get_monotonic_time() * 1000ULL;
+        *age_ms = presented_frame_last_ns && now > presented_frame_last_ns
+                      ? (double) (now - presented_frame_last_ns) / 1000000.0
+                      : -1.0;
+    }
+}
+
 void video_renderer_size(float *f_width_source, float *f_height_source, float *f_width, float *f_height) {
     width_source = (unsigned short) *f_width_source;
     height_source = (unsigned short) *f_height_source;
@@ -249,6 +275,8 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
     type_264 = -1;
     type_265 = -1;
     type_jpeg = -1;
+    presented_frame_count = 0;
+    presented_frame_last_ns = 0;
 
     /* this call to g_set_application_name makes server_name appear in the  X11 display window title bar, */
     /* (instead of the program name uxplay taken from (argv[0]). It is only set one time. */
@@ -407,6 +435,24 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
             renderer_type[i]->appsrc = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "video_source");
             g_assert(renderer_type[i]->appsrc);
             g_object_set(renderer_type[i]->appsrc, "caps", caps, "stream-type", 0, "is-live", TRUE, "format", GST_FORMAT_TIME, NULL);
+            if (!hls_video && !jpeg_pipeline) {
+                GstIterator *sinks = gst_bin_iterate_sinks(
+                    GST_BIN(renderer_type[i]->pipeline));
+                GValue item = G_VALUE_INIT;
+                if (gst_iterator_next(sinks, &item) == GST_ITERATOR_OK) {
+                    GstElement *sink = GST_ELEMENT(g_value_get_object(&item));
+                    GstPad *sinkpad =
+                        gst_element_get_static_pad(sink, "sink");
+                    if (sinkpad) {
+                        gst_pad_add_probe(sinkpad,
+                                          GST_PAD_PROBE_TYPE_BUFFER,
+                                          frame_probe_cb, NULL, NULL);
+                        gst_object_unref(sinkpad);
+                    }
+                    g_value_unset(&item);
+                }
+                gst_iterator_free(sinks);
+            }
             g_string_free(launch, TRUE);
             gst_caps_unref(caps);
             gst_object_unref(clock);
@@ -420,6 +466,7 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                      g_object_set(
                          G_OBJECT(renderer_type[i]->hud_overlay),
                          "text", "", "shaded-background", TRUE,
+                         "shading-value", 140,
                          "font-desc", "Monospace 9", "xpad", 8, "ypad", 8,
                          NULL);
                      gst_util_set_object_arg(

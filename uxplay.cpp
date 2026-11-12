@@ -2272,6 +2272,11 @@ extern "C" void set_uxplay_hud_text(const char *text, int right, int bottom) {
     video_renderer_set_hud_text(text, right != 0, bottom != 0);
 }
 
+extern "C" int get_uxplay_frame_stats(uint64_t *frames, double *age_ms) {
+    video_renderer_get_frame_stats(frames, age_ms);
+    return 0;
+}
+
 extern "C" void set_uxplay_log_callback(uxplay_log_callback_t callback) {
     api_log_callback = callback;
 }
