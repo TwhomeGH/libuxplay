@@ -427,6 +427,9 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                          "halignment", "left");
                      gst_util_set_object_arg(
                          G_OBJECT(renderer_type[i]->hud_overlay),
+                         "line-alignment", "left");
+                     gst_util_set_object_arg(
+                         G_OBJECT(renderer_type[i]->hud_overlay),
                          "valignment", "top");
                  }
                  g_free(hud_last_text);
@@ -699,6 +702,9 @@ void video_renderer_set_hud_text(const char *text, bool right, bool bottom) {
             gst_util_set_object_arg(
                 G_OBJECT(renderer_type[i]->hud_overlay),
                 "halignment", right ? "right" : "left");
+            gst_util_set_object_arg(
+                G_OBJECT(renderer_type[i]->hud_overlay),
+                "line-alignment", right ? "right" : "left");
             gst_util_set_object_arg(
                 G_OBJECT(renderer_type[i]->hud_overlay),
                 "valignment", bottom ? "bottom" : "top");
