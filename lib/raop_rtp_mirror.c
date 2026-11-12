@@ -206,6 +206,7 @@ raop_rtp_mirror_thread(void *arg)
     bool video_stream_suspended = false;
     bool first_packet = true;
     uint64_t last_video_packet_time = raop_ntp_get_local_time();
+    const uint64_t mirror_started_time = last_video_packet_time;
     
     while (1) {
         fd_set rfds;
@@ -228,6 +229,18 @@ raop_rtp_mirror_thread(void *arg)
                 logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
                            "no video packets for %.1f s; rebuilding mirror connection",
                            (double) (now - last_video_packet_time)
+                               / SECOND_IN_NSECS);
+                conn_reset = true;
+                break;
+            }
+        } else if (codec == VIDEO_CODEC_UNKNOWN
+                   && !video_stream_suspended) {
+            const uint64_t now = raop_ntp_get_local_time();
+            if (now > mirror_started_time
+                && now - mirror_started_time > 6 * SECOND_IN_NSECS) {
+                logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
+                           "no video codec for %.1f s; rebuilding mirror connection",
+                           (double) (now - mirror_started_time)
                                / SECOND_IN_NSECS);
                 conn_reset = true;
                 break;

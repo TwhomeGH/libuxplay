@@ -666,7 +666,7 @@ void video_renderer_hls_ready() {
     }
 }
 
-void video_renderer_set_hud_text(const char *text, bool right) {
+void video_renderer_set_hud_text(const char *text, bool right, bool bottom) {
     if (!text) {
         text = "";
     }
@@ -675,6 +675,7 @@ void video_renderer_set_hud_text(const char *text, bool right) {
             g_object_set(G_OBJECT(renderer_type[i]->hud_overlay),
                          "text", text,
                          "halignment", right ? "right" : "left",
+                         "valignment", bottom ? "bottom" : "top",
                          NULL);
         }
     }
