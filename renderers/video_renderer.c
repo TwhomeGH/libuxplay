@@ -78,6 +78,7 @@ typedef enum {
 
 struct video_renderer_s {
     GstElement *appsrc, *pipeline, *textsrc;
+    GstElement *hud_overlay;
     GstBus *bus;
     const char *codec;
     bool autovideo;
@@ -352,6 +353,9 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                 g_string_append(launch, "videoscale ! ");
                 if (jpeg_pipeline) {
                     g_string_append(launch, " imagefreeze allow-replace=TRUE ! textoverlay name=metadata_overlay ! ");
+                } else {
+                    g_string_append(launch,
+                                    "textoverlay name=hud_overlay ! ");
                 }
                 g_string_append(launch, videosink);
                 g_string_append(launch, " name=");
@@ -406,6 +410,17 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
             if (jpeg_pipeline) {
                  renderer_type[i]->textsrc = gst_bin_get_by_name(GST_BIN(renderer_type[i]->pipeline), "metadata_overlay");
                  g_object_set(G_OBJECT(renderer_type[i]->textsrc), "text", "", "shaded-background", TRUE, "font-desc", "Sans, 16",  NULL);
+            } else {
+                 renderer_type[i]->hud_overlay = gst_bin_get_by_name(
+                     GST_BIN(renderer_type[i]->pipeline), "hud_overlay");
+                 if (renderer_type[i]->hud_overlay) {
+                     g_object_set(
+                         G_OBJECT(renderer_type[i]->hud_overlay),
+                         "text", "", "shaded-background", TRUE,
+                         "font-desc", "Monospace 9", "halignment", "left",
+                         "valignment", "top", "xpad", 8, "ypad", 8,
+                         NULL);
+                 }
             }
         }	
 #ifdef X_DISPLAY_FIX
@@ -648,6 +663,20 @@ void video_renderer_hls_ready() {
                    gst_element_state_change_return_get_name(ret));
         gst_element_get_state(renderer->pipeline, &state, NULL, 1000 * GST_MSECOND);
         logger_log(logger, LOGGER_DEBUG,"pipeline state is %s", gst_element_state_get_name(state));
+    }
+}
+
+void video_renderer_set_hud_text(const char *text, bool right) {
+    if (!text) {
+        text = "";
+    }
+    for (int i = 0; i < n_renderers; i++) {
+        if (renderer_type[i] && renderer_type[i]->hud_overlay) {
+            g_object_set(G_OBJECT(renderer_type[i]->hud_overlay),
+                         "text", text,
+                         "halignment", right ? "right" : "left",
+                         NULL);
+        }
     }
 }
 

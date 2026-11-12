@@ -15,6 +15,7 @@ typedef void (*uxplay_client_callback_t)(const char *event,
 typedef void (*uxplay_ready_callback_t)(void);
 
 void set_uxplay_media_info_callback(uxplay_media_info_callback_t callback);
+void set_uxplay_hud_text(const char *text, int right);
 void set_uxplay_log_callback(uxplay_log_callback_t callback);
 void set_uxplay_client_callback(uxplay_client_callback_t callback);
 void set_uxplay_ready_callback(uxplay_ready_callback_t callback);

@@ -2268,6 +2268,10 @@ extern "C" void set_uxplay_media_info_callback(uxplay_media_info_callback_t call
     media_info_callback = callback;
 }
 
+extern "C" void set_uxplay_hud_text(const char *text, int right) {
+    video_renderer_set_hud_text(text, right != 0);
+}
+
 extern "C" void set_uxplay_log_callback(uxplay_log_callback_t callback) {
     api_log_callback = callback;
 }
