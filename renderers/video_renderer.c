@@ -466,7 +466,8 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                      g_object_set(
                          G_OBJECT(renderer_type[i]->hud_overlay),
                          "text", "", "shaded-background", TRUE,
-                         "shading-value", 140,
+                         "shading-value", 200,
+                         "draw-outline", TRUE,
                          "font-desc", "Monospace 9", "xpad", 8, "ypad", 8,
                          NULL);
                      gst_util_set_object_arg(
