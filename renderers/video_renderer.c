@@ -35,6 +35,9 @@ static unsigned char X11_search_attempts = 0;
 #endif
 
 static GstClockTime gst_video_pipeline_base_time = GST_CLOCK_TIME_NONE;
+static gchar *hud_last_text = NULL;
+static int hud_last_right = -1;
+static int hud_last_bottom = -1;
 static logger_t *logger = NULL;
 static unsigned short width, height, width_source, height_source;  /* not currently used */
 static bool first_packet = false;
@@ -417,11 +420,20 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                      g_object_set(
                          G_OBJECT(renderer_type[i]->hud_overlay),
                          "text", "", "shaded-background", TRUE,
-                         "font-desc", "Monospace 9", "halignment", "left",
-                         "valignment", "top", "xpad", 8, "ypad", 8,
+                         "font-desc", "Monospace 9", "xpad", 8, "ypad", 8,
                          NULL);
+                     gst_util_set_object_arg(
+                         G_OBJECT(renderer_type[i]->hud_overlay),
+                         "halignment", "left");
+                     gst_util_set_object_arg(
+                         G_OBJECT(renderer_type[i]->hud_overlay),
+                         "valignment", "top");
                  }
-            }
+                 g_free(hud_last_text);
+                 hud_last_text = NULL;
+                 hud_last_right = -1;
+                 hud_last_bottom = -1;
+             }
         }	
 #ifdef X_DISPLAY_FIX
         use_x11 = (strstr(videosink, "xvimagesink") || strstr(videosink, "ximagesink") || auto_videosink);
@@ -670,13 +682,26 @@ void video_renderer_set_hud_text(const char *text, bool right, bool bottom) {
     if (!text) {
         text = "";
     }
+    if (hud_last_text && !strcmp(text, hud_last_text)
+        && hud_last_right == (right ? 1 : 0)
+        && hud_last_bottom == (bottom ? 1 : 0)) {
+        return;
+    }
+    g_free(hud_last_text);
+    hud_last_text = g_strdup(text);
+    hud_last_right = right ? 1 : 0;
+    hud_last_bottom = bottom ? 1 : 0;
     for (int i = 0; i < n_renderers; i++) {
         if (renderer_type[i] && renderer_type[i]->hud_overlay) {
             g_object_set(G_OBJECT(renderer_type[i]->hud_overlay),
                          "text", text,
-                         "halignment", right ? "right" : "left",
-                         "valignment", bottom ? "bottom" : "top",
                          NULL);
+            gst_util_set_object_arg(
+                G_OBJECT(renderer_type[i]->hud_overlay),
+                "halignment", right ? "right" : "left");
+            gst_util_set_object_arg(
+                G_OBJECT(renderer_type[i]->hud_overlay),
+                "valignment", bottom ? "bottom" : "top");
         }
     }
 }
