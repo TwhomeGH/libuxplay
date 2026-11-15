@@ -40,6 +40,7 @@ static int hud_last_right = -1;
 static int hud_last_bottom = -1;
 static int hud_last_xpad = -1;
 static int hud_last_ypad = -1;
+G_LOCK_DEFINE_STATIC(hud);
 static volatile uint64_t presented_frame_count = 0;
 static volatile uint64_t presented_frame_last_ns = 0;
 static logger_t *logger = NULL;
@@ -482,12 +483,14 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                          G_OBJECT(renderer_type[i]->hud_overlay),
                          "valignment", "top");
                  }
+                 G_LOCK(hud);
                  g_free(hud_last_text);
                  hud_last_text = NULL;
                  hud_last_right = -1;
                  hud_last_bottom = -1;
                  hud_last_xpad = -1;
                  hud_last_ypad = -1;
+                 G_UNLOCK(hud);
              }
         }	
 #ifdef X_DISPLAY_FIX
@@ -738,10 +741,12 @@ void video_renderer_set_hud_text(const char *text, bool right, bool bottom,
     if (!text) {
         text = "";
     }
+    G_LOCK(hud);
     if (hud_last_text && !strcmp(text, hud_last_text)
         && hud_last_right == (right ? 1 : 0)
         && hud_last_bottom == (bottom ? 1 : 0)
         && hud_last_xpad == xpad && hud_last_ypad == ypad) {
+        G_UNLOCK(hud);
         return;
     }
     g_free(hud_last_text);
@@ -767,6 +772,7 @@ void video_renderer_set_hud_text(const char *text, bool right, bool bottom,
                 "valignment", bottom ? "bottom" : "top");
         }
     }
+    G_UNLOCK(hud);
 }
 
 void video_renderer_stop() {
@@ -832,7 +838,11 @@ static void video_renderer_destroy_instance(video_renderer_t *renderer) {
         if (renderer->textsrc) {
             gst_object_unref (renderer->textsrc);
             renderer->textsrc = NULL;
-        }	
+        }
+        if (renderer->hud_overlay) {
+            gst_object_unref (renderer->hud_overlay);
+            renderer->hud_overlay = NULL;
+        }
         gst_object_unref(renderer->bus);
         gst_object_unref(renderer->pipeline);
 #ifdef X_DISPLAY_FIX
@@ -852,11 +862,21 @@ static void video_renderer_destroy_instance(video_renderer_t *renderer) {
 }
 
 void video_renderer_destroy() {
+    G_LOCK(hud);
     for (int i = 0; i < n_renderers; i++) {
         if (renderer_type[i]) {
             video_renderer_destroy_instance(renderer_type[i]);
+            renderer_type[i] = NULL;
         }
     }
+    n_renderers = 0;
+    g_free(hud_last_text);
+    hud_last_text = NULL;
+    hud_last_right = -1;
+    hud_last_bottom = -1;
+    hud_last_xpad = -1;
+    hud_last_ypad = -1;
+    G_UNLOCK(hud);
 }
 
 static void get_stream_status_name(GstStreamStatusType type, char *name, size_t len) {
