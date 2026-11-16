@@ -20,6 +20,7 @@ void set_uxplay_media_info_callback(uxplay_media_info_callback_t callback);
 void set_uxplay_hud_text(const char *text, int right, int bottom,
                          int xpad, int ypad);
 int get_uxplay_frame_stats(uint64_t *frames, double *age_ms);
+int get_uxplay_video_input_stats(uint64_t *frames, double *age_ms);
 void set_uxplay_log_callback(uxplay_log_callback_t callback);
 void set_uxplay_client_callback(uxplay_client_callback_t callback);
 void set_uxplay_ready_callback(uxplay_ready_callback_t callback);

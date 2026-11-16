@@ -58,6 +58,7 @@ void video_renderer_set_track_metadata(const char *title, const char *artist, co
 void video_renderer_set_hud_text(const char *text, bool right, bool bottom,
                                  int xpad, int ypad);
 void video_renderer_get_frame_stats(uint64_t *frames, double *age_ms);
+void video_renderer_get_input_stats(uint64_t *frames, double *age_ms);
 void video_renderer_pause ();
 void video_renderer_hls_ready ();
 void video_renderer_seek(float position);

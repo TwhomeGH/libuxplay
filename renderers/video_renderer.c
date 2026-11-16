@@ -43,6 +43,8 @@ static int hud_last_ypad = -1;
 G_LOCK_DEFINE_STATIC(hud);
 static volatile uint64_t presented_frame_count = 0;
 static volatile uint64_t presented_frame_last_ns = 0;
+static volatile uint64_t pushed_frame_count = 0;
+static volatile uint64_t pushed_frame_last_ns = 0;
 static logger_t *logger = NULL;
 static unsigned short width, height, width_source, height_source;  /* not currently used */
 static bool first_packet = false;
@@ -205,6 +207,18 @@ void video_renderer_get_frame_stats(uint64_t *frames, double *age_ms) {
     }
 }
 
+void video_renderer_get_input_stats(uint64_t *frames, double *age_ms) {
+    if (frames) {
+        *frames = pushed_frame_count;
+    }
+    if (age_ms) {
+        const uint64_t now = (uint64_t) g_get_monotonic_time() * 1000ULL;
+        *age_ms = pushed_frame_last_ns && now > pushed_frame_last_ns
+                      ? (double) (now - pushed_frame_last_ns) / 1000000.0
+                      : -1.0;
+    }
+}
+
 void video_renderer_size(float *f_width_source, float *f_height_source, float *f_width, float *f_height) {
     width_source = (unsigned short) *f_width_source;
     height_source = (unsigned short) *f_height_source;
@@ -280,6 +294,8 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
     type_jpeg = -1;
     presented_frame_count = 0;
     presented_frame_last_ns = 0;
+    pushed_frame_count = 0;
+    pushed_frame_last_ns = 0;
 
     /* this call to g_set_application_name makes server_name appear in the  X11 display window title bar, */
     /* (instead of the program name uxplay taken from (argv[0]). It is only set one time. */
@@ -702,6 +718,8 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
             GST_BUFFER_PTS(buffer) = pts;
         }
         gst_buffer_fill(buffer, 0, data, *data_len);
+        pushed_frame_count++;
+        pushed_frame_last_ns = (uint64_t) g_get_monotonic_time() * 1000ULL;
         gst_app_src_push_buffer (GST_APP_SRC(renderer->appsrc), buffer);
 #ifdef X_DISPLAY_FIX
         if (renderer->gst_window && !(renderer->gst_window->window) && renderer->use_x11) {
@@ -870,6 +888,10 @@ void video_renderer_destroy() {
         }
     }
     n_renderers = 0;
+    presented_frame_count = 0;
+    presented_frame_last_ns = 0;
+    pushed_frame_count = 0;
+    pushed_frame_last_ns = 0;
     g_free(hud_last_text);
     hud_last_text = NULL;
     hud_last_right = -1;

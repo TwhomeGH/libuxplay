@@ -2278,6 +2278,11 @@ extern "C" int get_uxplay_frame_stats(uint64_t *frames, double *age_ms) {
     return 0;
 }
 
+extern "C" int get_uxplay_video_input_stats(uint64_t *frames, double *age_ms) {
+    video_renderer_get_input_stats(frames, age_ms);
+    return 0;
+}
+
 extern "C" void set_uxplay_log_callback(uxplay_log_callback_t callback) {
     api_log_callback = callback;
 }
