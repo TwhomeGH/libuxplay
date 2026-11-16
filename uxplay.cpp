@@ -65,6 +65,9 @@
 #endif
 
 #include "lib/raop.h"
+#include "lib/raop_rtp.h"
+
+extern "C" void raop_rtp_get_audio_stats(raop_rtp_audio_stats_t *stats);
 #include "lib/stream.h"
 #include "lib/logger.h"
 #include "lib/dnssd.h"
@@ -2280,6 +2283,19 @@ extern "C" int get_uxplay_frame_stats(uint64_t *frames, double *age_ms) {
 
 extern "C" int get_uxplay_video_input_stats(uint64_t *frames, double *age_ms) {
     video_renderer_get_input_stats(frames, age_ms);
+    return 0;
+}
+
+extern "C" int get_uxplay_audio_stats(uint64_t *received, uint64_t *decoded,
+                                         uint64_t *resendRequests,
+                                         uint64_t *emptyResends, uint64_t *bytes) {
+    raop_rtp_audio_stats_t stats = {0};
+    raop_rtp_get_audio_stats(&stats);
+    if (received) *received = stats.packets_received;
+    if (decoded) *decoded = stats.packets_decoded;
+    if (resendRequests) *resendRequests = stats.resend_requests;
+    if (emptyResends) *emptyResends = stats.empty_resends;
+    if (bytes) *bytes = stats.bytes_received;
     return 0;
 }
 

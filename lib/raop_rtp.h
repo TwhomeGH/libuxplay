@@ -18,6 +18,8 @@
 #ifndef RAOP_RTP_H
 #define RAOP_RTP_H
 
+#include <stdint.h>
+
 /* For raop_callbacks_t */
 #include "raop.h"
 #include "logger.h"
@@ -28,6 +30,16 @@
 #define RAOP_PACKET_LEN 32768
 
 typedef struct raop_rtp_s raop_rtp_t;
+
+/* Audio delivery counters for diagnostics. They describe packets seen by the
+ * audio RTP thread, not packets successfully played by the audio sink. */
+typedef struct {
+    uint64_t packets_received;
+    uint64_t packets_decoded;
+    uint64_t resend_requests;
+    uint64_t empty_resends;
+    uint64_t bytes_received;
+} raop_rtp_audio_stats_t;
 
 raop_rtp_t *raop_rtp_init(logger_t *logger, raop_callbacks_t *callbacks, raop_ntp_t *ntp, const char *remote, 
                           int remotelen, const unsigned char *aeskey, const unsigned char *aesiv);

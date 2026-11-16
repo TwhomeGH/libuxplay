@@ -40,6 +40,19 @@
 
 #define DELAY_AAC  0.20 //empirical, matches audio latency of about -0.25 sec after first clock sync event
 
+/* The AirPlay server keeps one active audio RTP stream in the normal mirroring
+ * case. These counters are intentionally process-wide so the GUI can query them
+ * without reaching into raop_conn_s from uxplay.cpp. */
+static raop_rtp_audio_stats_t g_audio_stats = {0};
+
+void
+raop_rtp_get_audio_stats(raop_rtp_audio_stats_t *stats)
+{
+    if (stats) {
+        *stats = g_audio_stats;
+    }
+}
+
 /* note: it is unclear what will happen in the unlikely event that this code is running at the time of the unix-time 
  * epoch event on 2038-01-19 at 3:14:08 UTC ! (but Apple will surely have removed AirPlay "legacy pairing" by then!) */
 
@@ -224,6 +237,7 @@ raop_rtp_resend_callback(void *opaque, unsigned short seqnum, unsigned short cou
     addrlen = raop_rtp->control_saddr_len;
 
     logger_log(raop_rtp->logger, LOGGER_DEBUG, "raop_rtp got resend request %d %d", seqnum, count);
+    g_audio_stats.resend_requests++;
     ourseqnum = raop_rtp->control_seqnum++;
 
     /* Fill the request buffer */
@@ -486,8 +500,12 @@ raop_rtp_thread_udp(void *arg)
                     logger_log(raop_rtp->logger, LOGGER_DEBUG, "raop_rtp resent audio packet: seqnum=%u", seqnum);
                     int result = raop_buffer_enqueue(raop_rtp->buffer, resent_packet, resent_packetlen, 1);
                     assert(result >= 0);
+                    (void) result;
+                    g_audio_stats.packets_received++;
+                    g_audio_stats.bytes_received += resent_packetlen;
                 } else if (logger_debug) {
                     /* type_c = 0x56 packets  with length 8 have been reported */
+                    g_audio_stats.empty_resends++;
                     char *str = utils_data_to_string(packet, packetlen, 16);
                     logger_log(raop_rtp->logger, LOGGER_DEBUG, "Received empty resent audio packet length %d, seqnum=%u:\n%s",
                                packetlen, seqnum, str);
@@ -613,6 +631,10 @@ raop_rtp_thread_udp(void *arg)
 
             int result = raop_buffer_enqueue(raop_rtp->buffer, packet, packetlen, 1);
             assert(result >= 0);
+            if (result > 0) {
+                g_audio_stats.packets_received++;
+                g_audio_stats.bytes_received += packetlen;
+            }
 
             if (!raop_rtp->initial_sync) {
                 /* wait until the first sync before dequeing ALAC */
@@ -625,6 +647,7 @@ raop_rtp_thread_udp(void *arg)
                 uint32_t rtp_timestamp = 0;
 
                 while ((payload = raop_buffer_dequeue(raop_rtp->buffer, &payload_size, &rtp_timestamp, &seqnum, no_resend))) {
+                    g_audio_stats.packets_decoded++;
                     audio_decode_struct audio_data; 
                     audio_data.rtp_time = rtp_timestamp;
                     audio_data.seqnum = seqnum;
@@ -671,6 +694,7 @@ raop_rtp_start_audio(raop_rtp_t *raop_rtp,  unsigned short *control_rport, unsig
                      unsigned short *data_lport, unsigned char *ct, unsigned int *sr)
 {
     logger_log(raop_rtp->logger, LOGGER_INFO, "raop_rtp starting audio");
+    g_audio_stats = (raop_rtp_audio_stats_t){0};
     int use_ipv6 = 0;
 
     assert(raop_rtp);

@@ -15,7 +15,7 @@
 #ifndef COMPAT_H
 #define COMPAT_H
 
-#if defined(WIN32)
+#if defined(_WIN32) || defined(WIN32)
 #include <ws2tcpip.h>
 #include <windows.h>
 #ifndef snprintf
