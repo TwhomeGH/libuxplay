@@ -2374,6 +2374,8 @@ extern "C" void video_reset(void *cls, reset_type_t type) {
 extern "C" int video_set_codec(void *cls, video_codec_t codec) {
     bool video_is_h265 = (codec == VIDEO_CODEC_H265);
     report_media_info("Video Codec", video_is_h265 ? "H.265 / HEVC" : "H.264 / AVC");
+    report_media_info("Video Decoder", video_decoder.c_str());
+    report_media_info("Video Renderer", videosink.c_str());
     if (mux_to_file) {
         mux_renderer_choose_video_codec(video_is_h265);
     }
