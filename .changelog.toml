@@ -1,0 +1,25 @@
+# Run changelogkit from the libuxplay root, independently of the host App.
+[tool.changelog]
+title = "libuxplay 變更歷史"
+project = "libuxplay"
+history = "docs/ChangeHistory.md"
+todo = "TODO.md"
+
+[[tool.changelog.sources]]
+name = "libuxplay"
+path = "."
+
+[[tool.changelog.docs.groups]]
+id = "engine"
+title = "引擎 API 與維護"
+color = "green"
+order = 10
+paths = ["docs/API-GUIDE.md", "docs/ChangeHistory.md", "TODO.md", "README.md"]
+
+[[tool.changelog.api]]
+id = "libuxplay"
+title = "libuxplay API"
+html = "build/doxygen/libuxplay"
+mount = "libuxplay"
+embed = true
+order = 10
