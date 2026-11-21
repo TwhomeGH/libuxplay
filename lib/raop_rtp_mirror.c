@@ -192,6 +192,10 @@ raop_rtp_mirror_thread(void *arg)
     unsigned int readstart = 0;
     bool conn_reset = false;
     uint64_t ntp_timestamp_nal = 0;
+    uint64_t mirror_video_packets = 0;
+    uint64_t mirror_valid_packets = 0;
+    uint64_t mirror_invalid_packets = 0;
+    uint64_t mirror_keyframe_packets = 0;
     uint64_t ntp_timestamp_raw = 0;
     uint64_t ntp_timestamp_remote = 0;
     uint64_t ntp_timestamp_local  = 0;
@@ -207,6 +211,7 @@ raop_rtp_mirror_thread(void *arg)
     bool first_packet = true;
     uint64_t last_video_packet_time = raop_ntp_get_local_time();
     const uint64_t mirror_started_time = last_video_packet_time;
+    bool video_packet_stall_warned = false;
     
     while (1) {
         fd_set rfds;
@@ -219,19 +224,19 @@ raop_rtp_mirror_thread(void *arg)
         }
         MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
 
-        /* Rebuild the mirror connection if the client is connected but
-         * stops sending video packets. Audio can keep running while the
-         * video pipeline is stuck, so this is the recovery point. */
+        /* Diagnostic mode: do not tear down the mirror connection when video
+         * packets stop. Keep the RTSP/mirror session alive so the caller can
+         * distinguish a transient TCP/Wi-Fi stall from a dead transport. */
         if (codec != VIDEO_CODEC_UNKNOWN && !video_stream_suspended) {
             const uint64_t now = raop_ntp_get_local_time();
-            if (now > last_video_packet_time
+            if (!video_packet_stall_warned && now > last_video_packet_time
                 && now - last_video_packet_time > 8 * SECOND_IN_NSECS) {
-                logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
-                           "no video packets for %.1f s; rebuilding mirror connection",
+                logger_log(raop_rtp_mirror->logger, LOGGER_WARNING,
+                           "no video packets for %.1f s; watchdog auto-reset "
+                           "disabled (manual Rebuild AirPlay stream required)",
                            (double) (now - last_video_packet_time)
                                / SECOND_IN_NSECS);
-                conn_reset = true;
-                break;
+                video_packet_stall_warned = true;
             }
         } else if (codec == VIDEO_CODEC_UNKNOWN
                    && !video_stream_suspended) {
@@ -490,6 +495,7 @@ raop_rtp_mirror_thread(void *arg)
                 bool valid_data = true;
                 int nalu_size = 0;
                 int nalus_count = 0;
+                bool packet_has_keyframe = false;
                 while (nalu_size < payload_size) {
                     int nc_len = byteutils_get_int_be(payload_decrypted, nalu_size);
                     if (nc_len < 0 || nalu_size + 4 > payload_size) {
@@ -506,10 +512,16 @@ raop_rtp_mirror_thread(void *arg)
                     }
                     int nalu_type = 0;
                     if (h265_video) {
-                        nalu_type = payload_decrypted[nalu_size] & 0x7e >> 1;;
+                        nalu_type = (payload_decrypted[nalu_size] & 0x7e) >> 1;
+                        if (nalu_type >= 16 && nalu_type <= 21) {
+                            packet_has_keyframe = true;
+                        }
                         //logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG," h265 video, NALU type %d, size %d", nalu_type, nc_len);
                     } else {
                         nalu_type = payload_decrypted[nalu_size] & 0x1f;
+                        if (nalu_type == 5) {
+                            packet_has_keyframe = true;
+                        }
                         int ref_idc = (payload_decrypted[nalu_size] >> 5);
                         switch (nalu_type) {
                         case 14:  /* Prefix NALu , seen before all VCL Nalu's in AirMyPc */
@@ -566,6 +578,24 @@ raop_rtp_mirror_thread(void *arg)
                     logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG, "nalu marked as invalid");
                     payload_out[0] = 1; /* mark video data as invalid h264 (failed decryption) */
                 }
+                mirror_video_packets++;
+                if (valid_data) {
+                    mirror_valid_packets++;
+                } else {
+                    mirror_invalid_packets++;
+                }
+                if (packet_has_keyframe) {
+                    mirror_keyframe_packets++;
+                }
+                if (mirror_video_packets % 100 == 1) {
+                    logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
+                               "mirror video stats: packets=%llu valid=%llu "
+                               "invalid=%llu keyframes=%llu",
+                               (unsigned long long) mirror_video_packets,
+                               (unsigned long long) mirror_valid_packets,
+                               (unsigned long long) mirror_invalid_packets,
+                               (unsigned long long) mirror_keyframe_packets);
+                }
 
 		
                 payload_decrypted = NULL;
@@ -587,6 +617,7 @@ raop_rtp_mirror_thread(void *arg)
 
                 raop_rtp_mirror->callbacks.video_process(raop_rtp_mirror->callbacks.cls, raop_rtp_mirror->ntp, &video_data);
                 last_video_packet_time = raop_ntp_get_local_time();
+                video_packet_stall_warned = false;
                 free(payload_out);
                 break;
             case 0x01:

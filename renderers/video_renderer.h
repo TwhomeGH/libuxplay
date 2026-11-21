@@ -57,8 +57,18 @@ void video_renderer_set_device_model(const char *model, const char *name);
 void video_renderer_set_track_metadata(const char *title, const char *artist, const char *album);
 void video_renderer_set_hud_text(const char *text, bool right, bool bottom,
                                  int xpad, int ypad);
+void video_renderer_set_virtual_camera_enabled(bool enabled);
 void video_renderer_get_frame_stats(uint64_t *frames, double *age_ms);
 void video_renderer_get_input_stats(uint64_t *frames, double *age_ms);
+void video_renderer_get_decode_stats(uint64_t *frames, double *age_ms);
+void video_renderer_get_overlay_stats(uint64_t *in_frames,
+                                      uint64_t *out_frames);
+void video_renderer_get_pipeline_stats(uint64_t *parser_out,
+                                       uint64_t *decoder_in,
+                                       uint64_t *decoder_out);
+void video_renderer_get_parser_stats(uint64_t *parser_in,
+                                     uint64_t *parser_out);
+const char *video_renderer_get_decoder_name(void);
 void video_renderer_pause ();
 void video_renderer_hls_ready ();
 void video_renderer_seek(float position);

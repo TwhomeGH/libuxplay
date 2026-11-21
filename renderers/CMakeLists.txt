@@ -38,10 +38,13 @@ pkg_check_modules(GST REQUIRED    gstreamer-1.0>=1.4
                                   gstreamer-app-1.0>=1.4
 )
 
+pkg_check_modules(CAIRO REQUIRED cairo)
+
 add_library( renderers
              STATIC
              audio_renderer.c
              video_renderer.c
+             virtual_camera_writer.c
              mux_renderer.c )
 
 target_link_libraries ( renderers PUBLIC airplay )
@@ -66,7 +69,7 @@ if ( APPLE AND NOT GST_MACOS )
    endif()
 endif()
 
-target_include_directories ( renderers PUBLIC ${GST_INCLUDE_DIRS} )
+target_include_directories ( renderers PUBLIC ${GST_INCLUDE_DIRS} ${CAIRO_INCLUDE_DIRS} )
 
 if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
   set( GST_LIBRARY_DIRS "/Library/FrameWorks/GStreamer.framework/Libraries")
@@ -79,7 +82,7 @@ if( GST_LIBRARY_DIRS MATCHES "/Library/FrameWorks/GStreamer.framework/lib" )
 elseif( CMAKE_VERSION VERSION_LESS "3.12" )
   target_link_libraries ( renderers  PUBLIC ${GST_LIBRARIES} )  
 else()		  
-  target_link_libraries( renderers PUBLIC ${GST_LINK_LIBRARIES} )
+  target_link_libraries( renderers PUBLIC ${GST_LINK_LIBRARIES} ${CAIRO_LINK_LIBRARIES} )
 endif()
 
 

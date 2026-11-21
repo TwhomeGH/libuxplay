@@ -87,6 +87,7 @@ struct raop_ntp_s {
     /* These variables only edited mutex locked */
     int running;
     int joined;
+    int stopping;
 
     // UDP socket
     int tsock;
@@ -443,14 +444,15 @@ raop_ntp_stop(raop_ntp_t *raop_ntp)
 {
     assert(raop_ntp);
 
-    /* Check that we are running and thread is not
-     * joined (should never be while still running) */
+    /* A worker may exit on a socket error before stop is called. It still
+     * needs joining and socket cleanup; running=false does not mean joined. */
     MUTEX_LOCK(raop_ntp->run_mutex);
-    if (!raop_ntp->running || raop_ntp->joined) {
+    if (raop_ntp->joined || raop_ntp->stopping) {
         MUTEX_UNLOCK(raop_ntp->run_mutex);
         return;
     }
     raop_ntp->running = 0;
+    raop_ntp->stopping = 1;
     MUTEX_UNLOCK(raop_ntp->run_mutex);
 
     logger_log(raop_ntp->logger, LOGGER_DEBUG, "raop_ntp stopping time thread");
@@ -471,6 +473,7 @@ raop_ntp_stop(raop_ntp_t *raop_ntp)
     /* Mark thread as joined */
     MUTEX_LOCK(raop_ntp->run_mutex);
     raop_ntp->joined = 1;
+    raop_ntp->stopping = 0;
     MUTEX_UNLOCK(raop_ntp->run_mutex);
 }
 

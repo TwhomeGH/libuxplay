@@ -40,6 +40,16 @@ static gboolean render_audio = FALSE;
 static gboolean async = FALSE;
 static gboolean vsync = FALSE;
 static gboolean sync = FALSE;
+static gboolean audio_pacing_arrival = TRUE;
+static double audio_output_peak = -1.0;
+static uint64_t audio_output_last_ns = 0;
+static uint64_t audio_pushed_frames = 0;
+
+static void audio_reset_output_stats(void) {
+    audio_output_peak = -1.0;
+    audio_output_last_ns = 0;
+    audio_pushed_frames = 0;
+}
 static gboolean audio_rtp = FALSE;
 
 typedef struct audio_renderer_s {
@@ -137,6 +147,12 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
     }
 
     logger = render_logger;
+    const char *audio_pacing_env = g_getenv("UXPLAY_AUDIO_PACING");
+    audio_pacing_arrival =
+        !(audio_pacing_env != NULL
+          && strcmp(audio_pacing_env, "airplay") == 0);
+    logger_log(logger, LOGGER_INFO, "Audio pacing mode: %s",
+               audio_pacing_arrival ? "arrival" : "airplay");
     
     aac = check_plugin_feature (avdec_aac);
     alac = check_plugin_feature (avdec_alac);
@@ -165,11 +181,12 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
 
         if (!audio_rtp) {
             /* Normal path: local audio output */
-            g_string_append (launch, "level ! ");
+            g_string_append (launch, "level name=audio_level post-messages=true ! ");
             g_string_append (launch, audiosink);
+            g_string_append (launch, " name=audio_sink");
             switch(i) {
             case 1:  /*ALAC*/
-                if (*audio_sync) {
+                if (!audio_pacing_arrival && *audio_sync) {
                     g_string_append (launch, " sync=true");
                     async = TRUE;
                 } else {
@@ -178,7 +195,7 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
                 }
                 break;
             default:
-                if (*video_sync) {
+                if (!audio_pacing_arrival && *video_sync) {
                     g_string_append (launch, " sync=true");
                     vsync = TRUE;
                 } else {
@@ -201,6 +218,18 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
         }
 
         g_assert (renderer_type[i]->pipeline);
+
+        GstElement *sink_elem =
+            gst_bin_get_by_name(GST_BIN(renderer_type[i]->pipeline), "audio_sink");
+        if (sink_elem != NULL) {
+            if (g_object_class_find_property(G_OBJECT_GET_CLASS(sink_elem), "async")) {
+                g_object_set(sink_elem, "async", FALSE, NULL);
+            }
+            if (g_object_class_find_property(G_OBJECT_GET_CLASS(sink_elem), "sync")) {
+                g_object_set(sink_elem, "sync", !audio_pacing_arrival, NULL);
+            }
+            gst_object_unref(sink_elem);
+        }
         gst_pipeline_use_clock(GST_PIPELINE_CAST(renderer_type[i]->pipeline), clock);
         renderer_type[i]->bus = gst_element_get_bus(renderer_type[i]->pipeline);
         renderer_type[i]->appsrc = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "audio_source");
@@ -239,6 +268,7 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
 }
 
 void audio_renderer_stop() {
+    audio_reset_output_stats();
     if (renderer) {
         gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
         gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
@@ -284,6 +314,7 @@ static void get_renderer_type(unsigned char *ct, int *id) {
 
 void  audio_renderer_start(unsigned char *ct) {
     int id = -1;
+    audio_reset_output_stats();
     get_renderer_type(ct, &id);
     if (id >= 0 && renderer) {
         if(*ct != renderer->ct) {
@@ -310,6 +341,15 @@ void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned s
     if (!render_audio) return;    /* do nothing unless render_audio == TRUE */
 
     GstClockTime pts = (GstClockTime) *ntp_time ;    /* now in nsecs */
+    static unsigned int audio_pts_logs = 0;
+    if (audio_pts_logs < 10) {
+        logger_log(logger, LOGGER_INFO,
+                   "audio buffer seq=%u pts=%" GST_TIME_FORMAT
+                   " base=%" GST_TIME_FORMAT " sync=%d",
+                   seqnum ? (unsigned int)*seqnum : 0, GST_TIME_ARGS(pts),
+                   GST_TIME_ARGS(gst_audio_pipeline_base_time), sync ? 1 : 0);
+        ++audio_pts_logs;
+    }
     //GstClockTimeDiff latency = GST_CLOCK_DIFF(gst_element_get_current_clock_time (renderer->appsrc), pts);
     if (sync) {
         if (pts >= gst_audio_pipeline_base_time) {
@@ -334,6 +374,13 @@ void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned s
     //g_print("audio latency %8.6f\n", (double) latency / SECOND_IN_NSECS);
     if (sync) {
         GST_BUFFER_PTS(buffer) = pts;
+        /* AAC-ELD/L-C carry 480 samples per packet; ALAC carries 352.
+         * Without a duration autosink's clock sync can hold or discard
+         * buffers even though PTS is valid. */
+        const guint samples_per_packet =
+            (renderer->ct == 2) ? 352U : 480U;
+        GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale_int(
+            GST_SECOND, samples_per_packet, 44100);
     }
     gst_buffer_fill(buffer, 0, data, *data_len);
     bool valid = false;
@@ -364,7 +411,15 @@ void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned s
         break;
     }
     if (valid) {
-        gst_app_src_push_buffer(GST_APP_SRC(renderer->appsrc), buffer);
+        const GstFlowReturn push_result =
+            gst_app_src_push_buffer(GST_APP_SRC(renderer->appsrc), buffer);
+        if (push_result != GST_FLOW_OK) {
+            logger_log(logger, LOGGER_WARNING,
+                       "audio appsrc push_buffer returned %s",
+                       gst_flow_get_name(push_result));
+        } else {
+            audio_pushed_frames++;
+        }
     } else {
         logger_log(logger, LOGGER_ERR, "*** ERROR invalid  audio frame (compression_type %d) skipped ", renderer->ct);
         logger_log(logger, LOGGER_ERR, "***       first byte of invalid frame was  0x%2.2x ", (unsigned int) data[0]);
@@ -378,6 +433,44 @@ void audio_renderer_set_volume(double volume) {
 }
 
 void audio_renderer_flush() {
+    if (!renderer || !renderer->pipeline || !renderer->appsrc) {
+        return;
+    }
+    /* Preserve session totals and last output evidence across a flush. */
+    logger_log(logger, LOGGER_WARNING,
+               "audio renderer flush: restarting audio pipeline after gap");
+    gst_element_set_state(renderer->pipeline, GST_STATE_READY);
+    gst_element_set_state(renderer->pipeline, GST_STATE_PLAYING);
+    gst_audio_pipeline_base_time =
+        gst_element_get_base_time(renderer->appsrc);
+    GstState state = GST_STATE_VOID_PENDING;
+    GstState pending = GST_STATE_VOID_PENDING;
+    const GstStateChangeReturn state_ret =
+        gst_element_get_state(renderer->pipeline, &state, &pending, 0);
+    logger_log(logger, LOGGER_WARNING,
+               "audio pipeline state after restart: %s pending=%s ret=%s",
+               gst_element_state_get_name(state),
+               gst_element_state_get_name(pending),
+               gst_element_state_change_return_get_name(state_ret));
+}
+
+void audio_renderer_get_output_stats(double *peak, uint64_t *age_ms, uint64_t *pushed) {
+    if (peak) {
+        *peak = audio_output_peak;
+    }
+    if (pushed) {
+        *pushed = audio_pushed_frames;
+    }
+    if (age_ms) {
+        if (audio_output_last_ns == 0) {
+            *age_ms = UINT64_MAX;
+        } else {
+            const uint64_t now = (uint64_t)g_get_real_time() * 1000ULL;
+            *age_ms = now > audio_output_last_ns
+                          ? (now - audio_output_last_ns) / 1000000ULL
+                          : 0;
+        }
+    }
 }
 
 void audio_renderer_destroy() {
@@ -417,6 +510,45 @@ static gboolean gstreamer_audio_pipeline_bus_callback(GstBus *bus, GstMessage *m
         break;
     case GST_MESSAGE_ELEMENT:
       // many "level" messages may be sent
+        {
+            const GstStructure *structure = gst_message_get_structure(message);
+            if (structure != NULL && gst_structure_has_name(structure, "level")) {
+                static gboolean logged_level_structure = FALSE;
+                if (!logged_level_structure) {
+                    gchar *text = gst_structure_to_string(structure);
+                    logger_log(logger, LOGGER_INFO,
+                               "first audio level message: %s", text);
+                    g_free(text);
+                    logged_level_structure = TRUE;
+                }
+                const GValue *peak = gst_structure_get_value(structure, "peak");
+                double max_peak = -G_MAXDOUBLE;
+                if (peak != NULL && GST_VALUE_HOLDS_ARRAY(peak)) {
+                    const guint size = gst_value_array_get_size(peak);
+                    for (guint i = 0; i < size; ++i) {
+                        const GValue *value = gst_value_array_get_value(peak, i);
+                        if (value != NULL && G_VALUE_HOLDS_DOUBLE(value)) {
+                            max_peak = MAX(max_peak, g_value_get_double(value));
+                        }
+                    }
+                } else if (peak != NULL && GST_VALUE_HOLDS_LIST(peak)) {
+                    const guint size = gst_value_list_get_size(peak);
+                    for (guint i = 0; i < size; ++i) {
+                        const GValue *value = gst_value_list_get_value(peak, i);
+                        if (value != NULL && G_VALUE_HOLDS_DOUBLE(value)) {
+                            max_peak = MAX(max_peak, g_value_get_double(value));
+                        }
+                    }
+                } else if (peak != NULL && G_VALUE_HOLDS_DOUBLE(peak)) {
+                    max_peak = g_value_get_double(peak);
+                }
+                if (max_peak > -G_MAXDOUBLE / 2.0) {
+                    audio_output_peak = max_peak;
+                }
+                audio_output_last_ns =
+                    (uint64_t)g_get_real_time() * 1000ULL;
+            }
+        }
         break;
     default:
         /* unhandled message */

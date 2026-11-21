@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "raop_buffer.h"
 #include "raop_rtp.h"
@@ -34,6 +35,17 @@
 #include "byteutils.h"
 
 #define RAOP_BUFFER_LENGTH 32
+/* Storage capacity is separate from the bounded playout waiting window. */
+#define RAOP_BUFFER_HISTORY_LENGTH 256
+#define RAOP_GAP_WAIT_NS 350000000ULL
+#define RAOP_RESEND_INTERVAL_NS 20000000ULL
+
+/* Deadlines must not move when NTP or the Windows wall clock is corrected. */
+static uint64_t buffer_now_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
+}
 
 typedef struct {
     /* Data available */
@@ -59,9 +71,15 @@ struct raop_buffer_s {
     int is_empty;
     unsigned short first_seqnum;
     unsigned short last_seqnum;
+    uint64_t last_queue_wait_ms;
+    uint64_t last_resend_ns;
+    unsigned short last_resend_seq;
+    int has_resend;
+    uint64_t pending_gap_skips;
+    uint64_t last_gap_wait_ms;
 
     /* RTP buffer entries */
-    raop_buffer_entry_t entries[RAOP_BUFFER_LENGTH];
+    raop_buffer_entry_t entries[RAOP_BUFFER_HISTORY_LENGTH];
 };
 
 raop_buffer_t *
@@ -79,7 +97,7 @@ raop_buffer_init(logger_t *logger,
     // Need to be initialized internally
     raop_buffer->aes_ctx = aes_cbc_init(aeskey, aesiv, AES_DECRYPT);
 
-    for (int i = 0; i < RAOP_BUFFER_LENGTH; i++) {
+    for (int i = 0; i < RAOP_BUFFER_HISTORY_LENGTH; i++) {
         raop_buffer_entry_t *entry = &raop_buffer->entries[i];
         entry->payload_data = NULL;
         entry->payload_size = 0;
@@ -93,7 +111,7 @@ raop_buffer_init(logger_t *logger,
 void
 raop_buffer_destroy(raop_buffer_t *raop_buffer)
 {
-    for (int i = 0; i < RAOP_BUFFER_LENGTH; i++) {
+    for (int i = 0; i < RAOP_BUFFER_HISTORY_LENGTH; i++) {
         raop_buffer_entry_t *entry = &raop_buffer->entries[i];
         if (entry->payload_data != NULL) {
             free(entry->payload_data);
@@ -172,10 +190,10 @@ raop_buffer_enqueue(raop_buffer_t *raop_buffer, unsigned char *data, unsigned sh
     if (datalen < 12 || datalen > RAOP_PACKET_LEN) {
         return -1;
     }
-    /* before time is synchronized, some empty data packets are sent */
-    if (datalen == 12 || (datalen == 16 && !memcmp(&data[12], empty_packet_marker, 4))) {
-        return 0;
-    }
+    /* Explicit no-data packets still occupy a sequence number. Keep a marker
+     * so they cannot later be mistaken for packet loss and resent forever. */
+    const int no_data = datalen == 12 ||
+        (datalen == 16 && !memcmp(&data[12], empty_packet_marker, 4));
     int payload_size = datalen - 12;
 
     /* Get correct seqnum for the packet */
@@ -192,12 +210,12 @@ raop_buffer_enqueue(raop_buffer_t *raop_buffer, unsigned char *data, unsigned sh
     }
 
     /* Check that there is always space in the buffer, otherwise flush */
-    if (seqnum_cmp(seqnum, raop_buffer->first_seqnum + RAOP_BUFFER_LENGTH) >= 0) {
+    if (seqnum_cmp(seqnum, raop_buffer->first_seqnum + RAOP_BUFFER_HISTORY_LENGTH) >= 0) {
         raop_buffer_flush(raop_buffer, seqnum);
     }
 
     /* Get entry corresponding our seqnum */
-    raop_buffer_entry_t *entry = &raop_buffer->entries[seqnum % RAOP_BUFFER_LENGTH];
+    raop_buffer_entry_t *entry = &raop_buffer->entries[seqnum % RAOP_BUFFER_HISTORY_LENGTH];
     if (entry->filled && seqnum_cmp(entry->seqnum, seqnum) == 0) {
         /* Packet resend, we can safely ignore */
         return 0;
@@ -207,11 +225,17 @@ raop_buffer_enqueue(raop_buffer_t *raop_buffer, unsigned char *data, unsigned sh
     entry->seqnum = seqnum;
     entry->rtp_timestamp = byteutils_get_int_be(data, 4);
     entry->filled = 1;
+    entry->packet_arrival_time = buffer_now_ns();
 
-    entry->payload_data = malloc(payload_size);
-    int decrypt_ret = raop_buffer_decrypt(raop_buffer, data, entry->payload_data, payload_size, &entry->payload_size);
-    assert(decrypt_ret >= 0);
-    assert((int) entry->payload_size <= payload_size);
+    if (no_data) {
+        entry->payload_data = NULL;
+        entry->payload_size = 0;
+    } else {
+        entry->payload_data = malloc(payload_size);
+        int decrypt_ret = raop_buffer_decrypt(raop_buffer, data, entry->payload_data, payload_size, &entry->payload_size);
+        assert(decrypt_ret >= 0);
+        assert((int) entry->payload_size <= payload_size);
+    }
 
     /* Update the raop_buffer seqnums */
     if (raop_buffer->is_empty) {
@@ -238,24 +262,48 @@ raop_buffer_dequeue(raop_buffer_t *raop_buffer, unsigned int *length, uint32_t *
     }
 
     /* Get the first buffer entry for inspection */
-    raop_buffer_entry_t *entry = &raop_buffer->entries[raop_buffer->first_seqnum % RAOP_BUFFER_LENGTH];
-    if (no_resend) {
-        /* If we do no resends, always return the first entry */
-    } else if (!entry->filled) {
-        /* Check how much we have space left in the buffer */
-        if (entry_count < RAOP_BUFFER_LENGTH) {
-            /* Return nothing and hope resend gets on time */
-            return NULL;
+    raop_buffer_entry_t *entry;
+    while (entry_count > 0) {
+        entry = &raop_buffer->entries[raop_buffer->first_seqnum % RAOP_BUFFER_HISTORY_LENGTH];
+        if (entry->filled && entry->payload_size > 0) {
+            break;
         }
-        /* Risk of buffer overrun, return empty buffer */
+        if (entry->filled) {
+            entry->filled = 0;
+            raop_buffer->first_seqnum++;
+            entry_count--;
+            continue;
+        }
+        /* A sparse stream may never fill the sequence window. Bound waiting
+         * by the arrival age of buffered successors as well as distance. */
+        uint64_t first_arrival = 0;
+        for (int offset = 1; offset < entry_count; ++offset) {
+            const raop_buffer_entry_t *newer = &raop_buffer->entries[
+                (unsigned short)(raop_buffer->first_seqnum + offset) % RAOP_BUFFER_HISTORY_LENGTH];
+            if (newer->filled && (!first_arrival || newer->packet_arrival_time < first_arrival)) {
+                first_arrival = newer->packet_arrival_time;
+            }
+        }
+        if (!no_resend && entry_count < RAOP_BUFFER_LENGTH) {
+            if (!first_arrival || buffer_now_ns() - first_arrival < RAOP_GAP_WAIT_NS) {
+                return NULL;
+            }
+        }
+        raop_buffer->pending_gap_skips++;
+        raop_buffer->last_gap_wait_ms = first_arrival
+            ? (buffer_now_ns() - first_arrival) / 1000000ULL : 0;
+        raop_buffer->first_seqnum += 1;
+        entry_count--;
+    }
+    if (entry_count <= 0) {
+        return NULL;
     }
 
     /* Update buffer and validate entry */
     raop_buffer->first_seqnum += 1;
-    if (!entry->filled) {
-        return NULL;
-    }
     entry->filled = 0;
+    raop_buffer->last_queue_wait_ms =
+        (buffer_now_ns() - entry->packet_arrival_time) / 1000000ULL;
 
     /* Return entry payload buffer */
     *rtp_timestamp = entry->rtp_timestamp;
@@ -267,22 +315,42 @@ raop_buffer_dequeue(raop_buffer_t *raop_buffer, unsigned int *length, uint32_t *
     return data;
 }
 
+uint64_t raop_buffer_last_queue_wait_ms(raop_buffer_t *raop_buffer) {
+    return raop_buffer->last_queue_wait_ms;
+}
+
+uint64_t raop_buffer_take_gap_skips(raop_buffer_t *raop_buffer, uint64_t *wait_ms) {
+    const uint64_t count = raop_buffer->pending_gap_skips;
+    *wait_ms = raop_buffer->last_gap_wait_ms;
+    raop_buffer->pending_gap_skips = 0;
+    return count;
+}
+
 void raop_buffer_handle_resends(raop_buffer_t *raop_buffer, raop_resend_cb_t resend_cb, void *opaque) {
     assert(raop_buffer);
     assert(resend_cb);
 
     if (seqnum_cmp(raop_buffer->first_seqnum, raop_buffer->last_seqnum) < 0) {
         unsigned short seqnum, count = 0;
-        logger_log(raop_buffer->logger, LOGGER_DEBUG, "raop_buffer_handle_resends first_seqnum=%u last seqnum=%u",
-                   raop_buffer->first_seqnum, raop_buffer->last_seqnum);
         for (seqnum = raop_buffer->first_seqnum; seqnum_cmp(seqnum, raop_buffer->last_seqnum) < 0; seqnum++) {
-            raop_buffer_entry_t *entry = &raop_buffer->entries[seqnum % RAOP_BUFFER_LENGTH];
+            raop_buffer_entry_t *entry = &raop_buffer->entries[seqnum % RAOP_BUFFER_HISTORY_LENGTH];
             if (entry->filled) {
                 break;
             }
 	    count++;
         }
         if (count){
+            const uint64_t now = buffer_now_ns();
+            if (raop_buffer->has_resend && raop_buffer->last_resend_seq == raop_buffer->first_seqnum
+                && now - raop_buffer->last_resend_ns < RAOP_RESEND_INTERVAL_NS) {
+                return;
+            }
+            raop_buffer->has_resend = 1;
+            raop_buffer->last_resend_seq = raop_buffer->first_seqnum;
+            raop_buffer->last_resend_ns = now;
+            logger_log(raop_buffer->logger, LOGGER_DEBUG,
+                       "raop_buffer_handle_resends first_seqnum=%u last seqnum=%u",
+                       raop_buffer->first_seqnum, raop_buffer->last_seqnum);
             resend_cb(opaque, raop_buffer->first_seqnum, count);
         }
     }
@@ -290,8 +358,12 @@ void raop_buffer_handle_resends(raop_buffer_t *raop_buffer, raop_resend_cb_t res
 
 void raop_buffer_flush(raop_buffer_t *raop_buffer, int next_seq) {
     assert(raop_buffer);
+    raop_buffer->has_resend = 0;
+    raop_buffer->last_queue_wait_ms = 0;
+    raop_buffer->pending_gap_skips = 0;
+    raop_buffer->last_gap_wait_ms = 0;
 
-    for (int i = 0; i < RAOP_BUFFER_LENGTH; i++) {
+    for (int i = 0; i < RAOP_BUFFER_HISTORY_LENGTH; i++) {
         if (raop_buffer->entries[i].payload_data) {
             free(raop_buffer->entries[i].payload_data);
             raop_buffer->entries[i].payload_data = NULL;   
@@ -305,4 +377,35 @@ void raop_buffer_flush(raop_buffer_t *raop_buffer, int next_seq) {
         raop_buffer->first_seqnum = next_seq;
         raop_buffer->last_seqnum = next_seq - 1;
     }
+}
+
+void raop_buffer_recover(raop_buffer_t *raop_buffer) {
+    assert(raop_buffer);
+    if (raop_buffer->is_empty) {
+        return;
+    }
+    /* Keep received audio: recovery advances past holes instead of discarding
+     * the entire backlog and waiting for yet another packet. */
+    while (seqnum_cmp(raop_buffer->last_seqnum, raop_buffer->first_seqnum) >= 0) {
+        const raop_buffer_entry_t *entry = &raop_buffer->entries[
+            raop_buffer->first_seqnum % RAOP_BUFFER_HISTORY_LENGTH];
+        if (entry->filled) {
+            return;
+        }
+        raop_buffer->first_seqnum++;
+    }
+}
+
+int raop_buffer_has_gap(raop_buffer_t *raop_buffer) {
+    assert(raop_buffer);
+    if (raop_buffer->is_empty) {
+        return 0;
+    }
+    if (seqnum_cmp(raop_buffer->last_seqnum, raop_buffer->first_seqnum) <= 0) {
+        return 0;
+    }
+    const raop_buffer_entry_t *entry =
+        &raop_buffer->entries[raop_buffer->first_seqnum %
+                              RAOP_BUFFER_HISTORY_LENGTH];
+    return !entry->filled;
 }

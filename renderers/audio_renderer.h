@@ -39,6 +39,7 @@ void audio_renderer_stop();
 void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time);
 void audio_renderer_set_volume(double volume);
 void audio_renderer_flush();
+void audio_renderer_get_output_stats(double *peak, uint64_t *age_ms, uint64_t *pushed);
 void audio_renderer_destroy();
 unsigned int audio_renderer_listen(void *loop, int id);
 #ifdef __cplusplus

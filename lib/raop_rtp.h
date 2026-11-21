@@ -39,6 +39,10 @@ typedef struct {
     uint64_t resend_requests;
     uint64_t empty_resends;
     uint64_t bytes_received;
+    uint64_t recoveries;
+    uint64_t pipeline_restarts;
+    uint64_t last_decoded_ns;
+    uint64_t last_gap_ms;
 } raop_rtp_audio_stats_t;
 
 raop_rtp_t *raop_rtp_init(logger_t *logger, raop_callbacks_t *callbacks, raop_ntp_t *ntp, const char *remote, 

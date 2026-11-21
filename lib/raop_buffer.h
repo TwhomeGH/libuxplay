@@ -32,6 +32,16 @@ int raop_buffer_enqueue(raop_buffer_t *raop_buffer, unsigned char *data, unsigne
 void *raop_buffer_dequeue(raop_buffer_t *raop_buffer, unsigned int *length, uint32_t *rtp_timestamp, unsigned short *seqnum, int no_resend);
 void raop_buffer_handle_resends(raop_buffer_t *raop_buffer, raop_resend_cb_t resend_cb, void *opaque);
 void raop_buffer_flush(raop_buffer_t *raop_buffer, int next_seq);
+/* Returns the monotonic residence time in milliseconds of the last dequeued
+ * payload. This measures buffer waiting only, not network or speaker latency. */
+uint64_t raop_buffer_last_queue_wait_ms(raop_buffer_t *raop_buffer);
+/* Returns and clears the number of missing sequences skipped since the last
+ * call. Writes the last skip's buffered-successor wait in milliseconds. */
+uint64_t raop_buffer_take_gap_skips(raop_buffer_t *raop_buffer, uint64_t *wait_ms);
+/* True when the playout head is missing but newer packets are present. */
+int raop_buffer_has_gap(raop_buffer_t *raop_buffer);
+/* Skip a stuck gap and preserve the earliest available received packet. */
+void raop_buffer_recover(raop_buffer_t *raop_buffer);
 
 int raop_buffer_decrypt(raop_buffer_t *raop_buffer, unsigned char *data, unsigned char* output,
                         unsigned int datalen, unsigned int *outputlen);

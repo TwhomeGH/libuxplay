@@ -198,6 +198,7 @@ static double db_high = 0.0;
 static bool taper_volume = false;
 static double initial_volume = 0.0;
 static bool h265_support = false;
+static bool virtual_camera_enabled = false;
 static int n_video_renderers = 0;
 static int n_audio_renderers = 0;
 static bool hls_support = false;
@@ -325,6 +326,7 @@ static void reset_engine_options() {
     taper_volume = false;
     initial_volume = 0.0;
     h265_support = false;
+    virtual_camera_enabled = false;
     hls_support = false;
     lang.clear();
     url.clear();
@@ -386,11 +388,13 @@ static void log(int level, const char* format, ...) {
         break;
     }
 
-    printf("%s%s\n", prefix, message);
-    fflush(stdout);
-
     if (api_log_callback) {
+        // The embedded host owns filtering and asynchronous output. Printing
+        // here would bypass both and block RTP threads on the debugger console.
         api_log_callback(level, message);
+    } else {
+        printf("%s%s\n", prefix, message);
+        fflush(stdout);
     }
 }
 
@@ -1380,6 +1384,8 @@ static void parse_arguments (int argc, char *argv[]) {
                 }
 	    } 
             restrict_clients = true;
+        } else if (arg == "-vcam") {
+            virtual_camera_enabled = true;
         } else if (arg == "-n") {
             if (!option_has_value(i, argc, arg, argv[i+1])) exit(1);
             bool ascii;
@@ -2286,6 +2292,50 @@ extern "C" int get_uxplay_video_input_stats(uint64_t *frames, double *age_ms) {
     return 0;
 }
 
+extern "C" int get_uxplay_video_decode_stats(uint64_t *frames, double *age_ms) {
+    video_renderer_get_decode_stats(frames, age_ms);
+    return 0;
+}
+
+extern "C" const char *get_uxplay_video_decoder(void) {
+    return video_renderer_get_decoder_name();
+}
+
+extern "C" int get_uxplay_video_pipeline_stats(uint64_t *parser_out,
+                                                 uint64_t *decoder_in,
+                                                 uint64_t *decoder_out) {
+    video_renderer_get_pipeline_stats(parser_out, decoder_in, decoder_out);
+    return 0;
+}
+
+extern "C" int get_uxplay_video_parser_stats(uint64_t *parser_in,
+                                                uint64_t *parser_out) {
+    video_renderer_get_parser_stats(parser_in, parser_out);
+    return 0;
+}
+
+extern "C" int get_uxplay_video_overlay_stats(uint64_t *in_frames,
+                                               uint64_t *out_frames) {
+    video_renderer_get_overlay_stats(in_frames, out_frames);
+    return 0;
+}
+
+#ifndef LIBUXPLAY_GIT_SHA
+#define LIBUXPLAY_GIT_SHA "unknown"
+#endif
+#ifndef LIBUXPLAY_BUILD_TIME
+#define LIBUXPLAY_BUILD_TIME "unknown"
+#endif
+
+extern "C" const char *get_uxplay_lib_build_info(void) {
+    static char info[192];
+    if (info[0] == '\0') {
+        snprintf(info, sizeof(info), "%s built %s local",
+                 LIBUXPLAY_GIT_SHA, LIBUXPLAY_BUILD_TIME);
+    }
+    return info;
+}
+
 extern "C" int get_uxplay_audio_stats(uint64_t *received, uint64_t *decoded,
                                          uint64_t *resendRequests,
                                          uint64_t *emptyResends, uint64_t *bytes) {
@@ -2296,6 +2346,47 @@ extern "C" int get_uxplay_audio_stats(uint64_t *received, uint64_t *decoded,
     if (resendRequests) *resendRequests = stats.resend_requests;
     if (emptyResends) *emptyResends = stats.empty_resends;
     if (bytes) *bytes = stats.bytes_received;
+    return 0;
+}
+
+extern "C" int get_uxplay_audio_recovery_count(uint64_t *recoveries) {
+    raop_rtp_audio_stats_t stats = {0};
+    raop_rtp_get_audio_stats(&stats);
+    if (recoveries) *recoveries = stats.recoveries;
+    return 0;
+}
+
+extern "C" int get_uxplay_audio_pipeline_restarts(uint64_t *restarts) {
+    raop_rtp_audio_stats_t stats = {0};
+    raop_rtp_get_audio_stats(&stats);
+    if (restarts) *restarts = stats.pipeline_restarts;
+    return 0;
+}
+
+extern "C" int get_uxplay_audio_output_stats(double *peak, uint64_t *age_ms, uint64_t *pushed) {
+    audio_renderer_get_output_stats(peak, age_ms, pushed);
+    return 0;
+}
+
+extern "C" int get_uxplay_audio_last_gap_ms(uint64_t *gap_ms) {
+    raop_rtp_audio_stats_t stats = {0};
+    raop_rtp_get_audio_stats(&stats);
+    if (gap_ms) *gap_ms = stats.last_gap_ms;
+    return 0;
+}
+
+extern "C" int get_uxplay_audio_age_ms(uint64_t *age_ms) {
+    raop_rtp_audio_stats_t stats = {0};
+    raop_rtp_get_audio_stats(&stats);
+    if (!age_ms) return 0;
+    if (stats.last_decoded_ns == 0) {
+        *age_ms = UINT64_MAX;
+        return 0;
+    }
+    const uint64_t now = get_local_time();
+    *age_ms = now > stats.last_decoded_ns
+                  ? (now - stats.last_decoded_ns) / 1000000ULL
+                  : 0;
     return 0;
 }
 
@@ -2396,7 +2487,9 @@ extern "C" int video_set_codec(void *cls, video_codec_t codec) {
     bool video_is_h265 = (codec == VIDEO_CODEC_H265);
     report_media_info("Video Codec", video_is_h265 ? "H.265 / HEVC" : "H.264 / AVC");
     report_media_info("Video Decoder", video_decoder.c_str());
-    report_media_info("Video Renderer", videosink.c_str());
+    std::string renderer_description = videosink;
+    renderer_description.append(videosink_options);
+    report_media_info("Video Renderer", renderer_description.c_str());
     if (mux_to_file) {
         mux_renderer_choose_video_codec(video_is_h265);
     }
@@ -2690,6 +2783,24 @@ extern "C" void audio_set_volume (void *cls, float volume) {
 }
 
 extern "C" void audio_get_format (void *cls, unsigned char *ct, unsigned short *spf, bool *usingScreen, bool *isMedia, uint64_t *audioFormat) {
+    static const struct AudioFormatName {
+        unsigned bit;
+        const char *name;
+    } audio_format_names[] = {
+        {11, "PCM/44100/16/2"}, {15, "PCM/48000/16/2"},
+        {18, "ALAC/44100/16/2"}, {19, "ALAC/44100/24/2"},
+        {20, "ALAC/48000/16/2"}, {21, "ALAC/48000/24/2"},
+        {22, "AAC-LC/44100/2"}, {23, "AAC-LC/48000/2"},
+        {24, "AAC-ELD/44100/2"}, {25, "AAC-ELD/48000/2"},
+        {26, "AAC-ELD/16000/1"}, {27, "AAC-ELD/24000/1"},
+    };
+    const char *source_format = "unknown";
+    for (const AudioFormatName &entry : audio_format_names) {
+        if ((*audioFormat & (1ULL << entry.bit)) != 0) {
+            source_format = entry.name;
+            break;
+        }
+    }
     unsigned char type;
     char value[128];
     LOGI("ct=%d spf=%d usingScreen=%d isMedia=%d  audioFormat=0x%lx",*ct, *spf, *usingScreen, *isMedia, (unsigned long) *audioFormat);
@@ -2717,10 +2828,11 @@ extern "C" void audio_get_format (void *cls, unsigned char *ct, unsigned short *
         report_media_info("Audio Codec", value);
         break;
     }
-    snprintf(value, sizeof(value), "ct=%u spf=%u screen=%s media=%s format=0x%llx",
+    snprintf(value, sizeof(value),
+             "ct=%u spf=%u screen=%s media=%s format=0x%llx source=%s",
              (unsigned int) *ct, (unsigned int) *spf,
              *usingScreen ? "yes" : "no", *isMedia ? "yes" : "no",
-             (unsigned long long) *audioFormat);
+             (unsigned long long) *audioFormat, source_format);
     report_media_info("Audio Format", value);
     if (audio_dumpfile && type != audio_type) {
         fclose(audio_dumpfile);
@@ -3161,6 +3273,7 @@ int start_uxplay (int argc, char *argv[]) {
         UXPLAY_RETURN(0);
     }
     reset_engine_options();
+    LOGI("libuxplay build: %s", get_uxplay_lib_build_info());
 
     std::vector<char> server_hw_addr;
     std::string config_file = "";
@@ -3227,6 +3340,7 @@ int start_uxplay (int argc, char *argv[]) {
         read_config_file(config_file.c_str(), argv[0]);
     }
     parse_arguments (argc, argv);
+    video_renderer_set_virtual_camera_enabled(virtual_camera_enabled);
 
     log_level = (debug_log ? LOGGER_DEBUG_DATA : LOGGER_INFO);
     if (debug_log && suppress_packet_debug_data) {
@@ -3355,7 +3469,9 @@ int start_uxplay (int argc, char *argv[]) {
     } 
 
     report_media_info("Video Decoder", video_decoder.c_str());
-    report_media_info("Video Renderer", videosink.c_str());
+    std::string renderer_description = videosink;
+    renderer_description.append(videosink_options);
+    report_media_info("Video Renderer", renderer_description.c_str());
 
     if (bt709_fix && use_video) {
         video_parser.append(" ! ");
